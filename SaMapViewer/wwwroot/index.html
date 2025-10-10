@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>SAMP PNG карта (Leaflet)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html,body{height:100%;margin:0;font-family:sans-serif;}
+    #map{position:absolute;inset:0;}
+    .panel{
+      position:absolute;left:16px;top:16px;z-index:1200;background:rgba(255,255,255,0.97);
+      padding:12px 14px;border-radius:10px;box-shadow:0 6px 20px rgba(10,20,40,0.12);
+      min-width:350px;max-height:95vh;overflow:auto;
+    }
+    table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;}
+    th,td{padding:5px 4px;text-align:left;border-bottom:1px solid #eee}
+    .debug {font-size:12px;color:#666;margin-top:8px}
+    .btn {padding:5px 9px; background:#298cff; color:#fff; border:none; border-radius:7px; cursor:pointer;}
+    .btn.ghost {background:transparent; color:#298cff; border:1px solid #298cff;}
+    input[type="number"] {width:70px;}
+    .cp-marker {background:#ff9500;border-radius:50%;width:10px;height:10px;display:inline-block;}
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <button id="btn-panel" class="btn ghost" style="position:absolute;right:16px;top:16px;z-index:1300">Скрыть панель</button>
+  <div class="panel">
+    <h3>SAMP карта</h3>
+    <div style="margin-top:8px">
+      <label><input type="checkbox" id="live-toggle" checked/> Показывать игроков в реальном времени</label>
+    </div>
+    
+    <div style="margin-top:10px; padding:8px; border:1px solid #eee; border-radius:8px;">
+      <div style="font-weight:600; margin-bottom:6px;">Ситуации</div>
+      <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+        <select id="nick-select" style="flex:1; min-width:160px; padding:6px 8px;"></select>
+        <input id="nick-add-input" placeholder="Добавить ник" style="width:140px; padding:6px 8px;"/>
+        <button id="btn-nick-add" class="btn ghost">Добавить</button>
+        <select id="sit-type" style="padding:6px 8px;">
+          <option value="code7">Code 7</option>
+          <option value="pursuit">Погоня</option>
+          <option value="trafficstop">Трафик-стоп</option>
+          <option value="code6">Code 6</option>
+          <option value="911">911</option>
+        </select>
+        <select id="sit-mode" style="padding:6px 8px; display:none;">
+          <option value="passive">Пассивная</option>
+          <option value="active">Активная</option>
+          <option value="foot">Пешая</option>
+        </select>
+        <select id="sit-tac" style="padding:6px 8px; display:none;">
+          <option value="">TAC - нет</option>
+          <option value="1">TAC - 1</option>
+          <option value="2">TAC - 2</option>
+          <option value="3">TAC - 3</option>
+        </select>
+        <select id="sit-risk" style="padding:6px 8px; display:none;">
+          <option value="low">Пониженный риск</option>
+          <option value="high">Повышенный риск</option>
+        </select>
+        <button id="btn-sit-create" class="btn">Создать</button>
+        <label style="margin-left:auto"><input type="checkbox" id="panic-toggle"/> Паника</label>
+      </div>
+      <div id="sit-list" class="debug" style="margin-top:8px; max-height:200px; overflow:auto;"></div>
+    </div>
+    
+  </div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.7/signalr.min.js"></script>
+<script>
+const MAP_IMAGE = "sa_map.png"; // путь к PNG
+const MAP_WIDTH = 6144, MAP_HEIGHT = 6144; // твои размеры PNG
+
+let map, imageBounds;
+let calibrating = false; // removed calibration UI
+let controlPoints = [];
+let affine = null;
+let hubConnection = null;
+let liveEnabled = true;
+let useAffine = false; // disable affine/calibration usage
+let invertX = false, invertY = true; // авто-инверсия по Y
+function applyInversion(px, py){
+  const x = invertX ? (MAP_WIDTH - px) : px;
+  const y = invertY ? (MAP_HEIGHT - py) : py;
+  return [x, y];
+}
+const nickToMarker = new Map();
+const nickToStatus = new Map();
+const customNicks = new Set();
+
+// Список статусов
+const STATUS_OPTIONS = [
+  "Доступен",
+  "Трафик-стоп",
+  "911",
+  "Code 6",
+  "Code 6 (RED)",
+  "Конвой",
+  "Code 7",
+  "Не на смене",
+  "Недоступен",
+  "ничего",
+  "TAC - 1",
+  "TAC - 1 (RED)",
+  "TAC - 2",
+  "TAC - 2 (RED)",
+  "TAC - 3",
+  "TAC - 3 (RED)"
+];
+
+const STORAGE_KEY = "sa_affine_matrix_v1";
+const CP_KEY = "sa_cp_v1";
+
+function toLeafletLatLng(px, py){
+  return L.latLng(MAP_HEIGHT - py, px);
+}
+function fromLeafletLatLng(latlng){
+  return { px: latlng.lng, py: MAP_HEIGHT - latlng.lat };
+}
+
+window.onload = function(){
+  map = L.map('map', { crs: L.CRS.Simple, minZoom:-4, maxZoom:4 });
+  imageBounds = [[0,0], [MAP_HEIGHT, MAP_WIDTH]];
+  L.imageOverlay(MAP_IMAGE, imageBounds).addTo(map);
+  map.setMaxBounds(imageBounds);
+  map.fitBounds(imageBounds);
+
+  // убраны обработчики для калибровки/подсказок
+
+  // убрано восстановление точек/матрицы
+
+  initLive();
+  fetchInitialPlayers();
+
+  // убран блок affine (вкл/импорт/экспорт/тест)
+
+  // Панель показать/скрыть
+  const panelBtn = document.getElementById('btn-panel');
+  const panel = document.querySelector('.panel');
+  let panelVisible = localStorage.getItem('panel_visible') !== 'false';
+  panel.style.display = panelVisible ? 'block' : 'none';
+  panelBtn.textContent = panelVisible ? 'Скрыть панель' : 'Показать панель';
+  panelBtn.onclick = function(){
+    panelVisible = !panelVisible;
+    panel.style.display = panelVisible ? 'block' : 'none';
+    panelBtn.textContent = panelVisible ? 'Скрыть панель' : 'Показать панель';
+    localStorage.setItem('panel_visible', panelVisible ? 'true' : 'false');
+  };
+
+  // инверсия по Y фиксирована включенной
+};
+
+// --- UI и таблица ---
+// удалены функции таблицы/калибровки и debug
+
+// --- affine вычисление ---
+// удалены вычисления affine
+
+// --- Преобразование gx,gy → px,py через affine
+function gameToPx(gx, gy) {
+  // Фиксированная матрица (упрощение без калибровки)
+  const a = 1.02943379, b = 0.00266693, c = 3065.06572957;
+  const d = -0.00000000, e = 1.03255360, f = 3044.78570219;
+  const px = a * gx + b * gy + c;
+  const py = d * gx + e * gy + f;
+  return [px, py];
+}
+
+// --- Рендер игроков ---
+function upsertPlayerMarker(nick, gx, gy){
+  let [px, py] = gameToPx(gx, gy);
+  [px, py] = applyInversion(px, py);
+  const latlng = toLeafletLatLng(px, py);
+  let marker = nickToMarker.get(nick);
+  if (!marker){
+    marker = L.marker(latlng, {title:nick});
+    marker.addTo(map).bindTooltip(nick, {permanent:true, direction:'top', offset:[0,-10]});
+    // Инициализируем статус по умолчанию
+    if (!nickToStatus.has(nick)) nickToStatus.set(nick, "ничего");
+    marker.bindPopup(buildPopupHtml(nick));
+    marker.on('popupopen', ()=> attachPopupHandlers(nick));
+    nickToMarker.set(nick, marker);
+    refreshNickOptions();
+  } else {
+    marker.setLatLng(latlng);
+  }
+}
+
+function buildPopupHtml(nick){
+  const status = nickToStatus.get(nick) || "ничего";
+  const selectId = `status-${encodeURIComponent(nick)}`;
+  const optionsHtml = STATUS_OPTIONS.map(opt => `\n        <option value="${opt}"${opt===status?" selected":""}>${opt}</option>`).join("");
+  return `
+    <div>
+      <div style="font-weight:600;margin-bottom:6px">${nick}</div>
+      <label style="font-size:12px;color:#444;">Статус:</label>
+      <select id="${selectId}" data-nick="${nick}" style="width:100%; margin-top:4px;">
+        ${optionsHtml}
+      </select>
+    </div>`;
+}
+
+function attachPopupHandlers(nick){
+  const selectId = `status-${encodeURIComponent(nick)}`;
+  const el = document.getElementById(selectId);
+  if (!el) return;
+  el.onchange = async function(){
+    const newStatus = el.value;
+    nickToStatus.set(nick, newStatus);
+    try{
+      await fetch('/api/coords/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nick, status: newStatus })
+      });
+    } catch(e) { /* no-op */ }
+  };
+}
+
+async function fetchInitialPlayers(){
+  try{
+    const resp = await fetch('/api/coords/all');
+    if(!resp.ok) return;
+    const data = await resp.json();
+    data.forEach(p=> {
+      const nick = p.nick || p.Nick;
+      const x = p.x || p.X;
+      const y = p.y || p.Y;
+      const status = p.status || p.Status || "ничего";
+      nickToStatus.set(nick, status);
+      upsertPlayerMarker(nick, x, y);
+    });
+  }catch(err){ /* no-op */ }
+}
+
+function initLive(){
+  hubConnection = new signalR.HubConnectionBuilder()
+    .withUrl('/coordshub')
+    .withAutomaticReconnect()
+    .build();
+
+  hubConnection.on('UpdatePlayer', payload =>{
+    if(!liveEnabled) return;
+    const {nick, x, y} = payload;
+    upsertPlayerMarker(nick, x, y);
+  });
+
+  hubConnection.on('UpdatePlayerStatus', payload =>{
+    const { nick, status } = payload;
+    nickToStatus.set(nick, status || "ничего");
+    const marker = nickToMarker.get(nick);
+    if (marker){
+      marker.setPopupContent(buildPopupHtml(nick));
+    }
+  });
+
+  hubConnection.on('SituationCreated', s => renderSituations());
+  hubConnection.on('SituationUpdated', s => renderSituations());
+  hubConnection.on('PanicUpdated', p => {/* already handled by status event */});
+
+  hubConnection.start().catch(()=>{});
+
+  const liveToggle = document.getElementById('live-toggle');
+  liveToggle.addEventListener('change', (e)=>{
+    liveEnabled = e.target.checked;
+    // скрыть/показать маркеры
+    nickToMarker.forEach(m=> m.setOpacity(liveEnabled ? 1 : 0));
+  });
+}
+
+// --- Кнопки ---
+document.getElementById('btn-calib').onclick = function(){
+  calibrating = !calibrating;
+  this.textContent = calibrating ? 'Калибровка ВКЛ' : 'Режим калибровки';
+  this.style.background = calibrating ? '#ff9500' : '#298cff';
+  debugLog(calibrating ? "Кликните по карте для добавления точки." : "Калибровка выключена.");
+};
+document.getElementById('btn-reset').onclick = function(){
+  if(confirm('Сбросить все точки и матрицу?')){
+    controlPoints = [];
+    affine = null;
+    renderCpTable();
+    showAffine();
+    localStorage.removeItem(CP_KEY);
+    localStorage.removeItem(STORAGE_KEY);
+    debugLog("Все точки и матрица сброшены.");
+  }
+};
+document.getElementById('btn-save').onclick = function(){
+  if(affine && affine.length===6){
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(affine));
+    alert('Affine-матрица сохранена в localStorage.');
+  } else {
+    alert('Нет вычисленной матрицы!');
+  }
+};
+
+// --- Для наглядности: тестовые маркеры по игровым координатам ---
+window.addEventListener('load', ()=>{
+  setTimeout(()=>{
+    [
+      {gx:-3000,gy:-3000, label:"(-3000,-3000)"},
+      {gx:3000,gy:-3000, label:"(3000,-3000)"},
+      {gx:3000,gy:3000, label:"(3000,3000)"},
+      {gx:-3000,gy:3000, label:"(-3000,3000)"},
+      {gx:0,gy:0, label:"(0,0) центр"}
+    ].forEach(pt=>{
+      let [px, py] = gameToPx(pt.gx,pt.gy);
+      [px, py] = applyInversion(px, py);
+      const latlng = toLeafletLatLng(px, py);
+      L.circleMarker(latlng,{radius:6,color:'#007aff',fillOpacity:0.6}).addTo(map).bindPopup(pt.label);
+    });
+  },700);
+  // UI: ситуация тип → показать доп. поля
+  const sitType = document.getElementById('sit-type');
+  const sitMode = document.getElementById('sit-mode');
+  const sitTac  = document.getElementById('sit-tac');
+  const sitRisk = document.getElementById('sit-risk');
+  const nickSelect = document.getElementById('nick-select');
+  const nickAddInput = document.getElementById('nick-add-input');
+  const btnNickAdd = document.getElementById('btn-nick-add');
+  const panicToggle = document.getElementById('panic-toggle');
+  const btnCreate = document.getElementById('btn-sit-create');
+  // загрузим сохранённые кастомные ники
+  try {
+    const saved = JSON.parse(localStorage.getItem('custom_nicks')||'[]');
+    if (Array.isArray(saved)) saved.forEach(n=> customNicks.add(n));
+  } catch(e) {}
+  refreshNickOptions();
+  sitType.addEventListener('change', ()=>{
+    const v = sitType.value;
+    sitMode.style.display = v==='pursuit' ? '' : 'none';
+    sitTac.style.display  = v==='pursuit' ? '' : 'none';
+    sitRisk.style.display = v==='trafficstop' ? '' : 'none';
+  });
+  btnCreate.onclick = async ()=>{
+    const type = sitType.value;
+    const metadata = {};
+    if (type==='pursuit'){
+      metadata.mode = sitMode.value;
+      if (sitTac.value) metadata.tac = sitTac.value;
+    }
+    if (type==='trafficstop'){
+      metadata.risk = sitRisk.value;
+    }
+    try{
+      await fetch('/api/situations/create', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ type, metadata }) });
+    } catch(e){}
+  };
+  btnNickAdd.onclick = ()=>{
+    const n = (nickAddInput.value||'').trim();
+    if (!n) return;
+    customNicks.add(n);
+    localStorage.setItem('custom_nicks', JSON.stringify(Array.from(customNicks)));
+    nickAddInput.value = '';
+    refreshNickOptions(n);
+  };
+  panicToggle.addEventListener('change', async ()=>{
+    const nick = (nickSelect.value||'').trim();
+    if (!nick) { alert('Укажите ник'); panicToggle.checked = !panicToggle.checked; return; }
+    try{
+      await fetch('/api/situations/panic', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ nick, value: panicToggle.checked ? 1 : 0 }) });
+    }catch(e){}
+  });
+  renderSituations();
+});
+
+function refreshNickOptions(selectNick){
+  const sel = document.getElementById('nick-select');
+  if (!sel) return;
+  const nicks = Array.from(new Set([ ...nickToMarker.keys(), ...customNicks ]));
+  nicks.sort((a,b)=> a.localeCompare(b,'ru'));
+  sel.innerHTML = '<option value="">Выберите ник</option>' + nicks.map(n=>`<option value="${n}">${n}</option>`).join('');
+  if (selectNick) sel.value = selectNick;
+}
+
+async function renderSituations(){
+  try{
+    const resp = await fetch('/api/situations/all');
+    if (!resp.ok) return;
+    const list = await resp.json();
+    const cont = document.getElementById('sit-list');
+    cont.innerHTML = '';
+    list.forEach(s =>{
+      const div = document.createElement('div');
+      const title = situationLabel(s);
+      const joinBtn = document.createElement('button');
+      joinBtn.className = 'btn ghost';
+      joinBtn.textContent = 'Присоединиться';
+      joinBtn.style.marginLeft = '6px';
+      joinBtn.onclick = ()=> joinSituation(s.id);
+      const leaveBtn = document.createElement('button');
+      leaveBtn.className = 'btn ghost';
+      leaveBtn.textContent = 'Покинуть';
+      leaveBtn.style.marginLeft = '6px';
+      leaveBtn.onclick = ()=> leaveSituation(s.id);
+      div.textContent = title + ' | Участники: ' + (s.participants?.length || 0);
+      div.appendChild(joinBtn);
+      div.appendChild(leaveBtn);
+      cont.appendChild(div);
+    });
+  }catch(e){}
+}
+
+function situationLabel(s){
+  const type = (s.type||'').toLowerCase();
+  if (type==='code7') return 'Code 7';
+  if (type==='code6') return 'Code 6';
+  if (type==='911') return '911';
+  if (type==='pursuit'){
+    const m = s.metadata?.mode || '';
+    const t = s.metadata?.tac || '';
+    let label = m==='active'?'Погоня активная': m==='passive'?'Погоня пассивная': m==='foot'?'Пешая погоня':'Погоня';
+    if (t) label += ` TAC-${t}`;
+    return label;
+  }
+  if (type==='trafficstop'){
+    const r = s.metadata?.risk || '';
+    return r==='high'?'Трафик-стоп (повыш. риск)': r==='low'?'Трафик-стоп (пониж. риск)':'Трафик-стоп';
+  }
+  return s.type || 'Ситуация';
+}
+
+async function joinSituation(id){
+  const nick = (document.getElementById('nick-select').value||'').trim();
+  if (!nick){ alert('Укажите ник'); return; }
+  try{
+    await fetch(`/api/situations/${id}/join`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ nick }) });
+    renderSituations();
+  }catch(e){}
+}
+
+async function leaveSituation(id){
+  const nick = (document.getElementById('nick-select').value||'').trim();
+  if (!nick){ alert('Укажите ник'); return; }
+  try{
+    await fetch(`/api/situations/${id}/leave`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ nick }) });
+    renderSituations();
+  }catch(e){}
+}
+
+function drawTestCorners(){
+  const tests = [
+    {gx:-3000,gy:-3000,label:'(-3000,-3000)'},
+    {gx:3000,gy:-3000,label:'(3000,-3000)'},
+    {gx:3000,gy:3000,label:'(3000,3000)'},
+    {gx:-3000,gy:3000,label:'(-3000,3000)'},
+    {gx:0,gy:0,label:'(0,0) центр'}
+  ];
+  tests.forEach(pt=>{
+    let [px, py] = gameToPx(pt.gx, pt.gy);
+    [px, py] = applyInversion(px, py);
+    const latlng = toLeafletLatLng(px, py);
+    L.circleMarker(latlng,{radius:6,color:'#ff2d55',fillOpacity:0.6}).addTo(map).bindPopup('Тест '+pt.label);
+  });
+}
+</script>
+</body>
+</html>
