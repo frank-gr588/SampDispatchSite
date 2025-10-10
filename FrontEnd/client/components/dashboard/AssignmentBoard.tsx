@@ -267,15 +267,16 @@ export function AssignmentBoard({
                   )}
                 >
                     <div className="flex items-center gap-3">
-                      <span className={cn(
-                        "flex h-9 w-9 items-center justify-center rounded-full border border-border/50 text-sm font-semibold uppercase tracking-[0.06em]",
-                        statusClass(unit.status)
-                      )} title={`Unit ${idx + 1}`}>
-                        {String(idx + 1)}
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-2 px-3 py-1 rounded-md border border-border/50 text-sm font-semibold uppercase tracking-[0.06em]",
+                          statusClass(unit.status)
+                        )}
+                        title={`Unit ${idx + 1}`}
+                      >
+                        <span className="text-sm">{unit.marking ?? "—"}</span>
+                        <span className="ml-2 text-xs bg-muted/10 px-2 py-0.5 rounded-sm">#{idx + 1}</span>
                       </span>
-                      <div>
-                        <p className="text-sm font-semibold text-foreground">{unit.marking ?? "—"}</p>
-                      </div>
                     </div>
                   <div className="flex items-center justify-between text-[0.65rem] text-muted-foreground">
                     <span>{unit.status ?? "—"}</span>
@@ -400,13 +401,17 @@ export function AssignmentBoard({
                       {assigned.map((unit) => (
                         <div
                           key={unit.id}
-                          className="group flex items-center gap-2 rounded-full border border-border/50 bg-background/70 px-3 py-1 text-[0.65rem] text-muted-foreground transition hover:border-primary/40 hover:text-primary"
+                          className="group flex items-center gap-2 rounded-md border border-border/50 bg-background/70 px-3 py-1 text-[0.65rem] text-muted-foreground transition hover:border-primary/40 hover:text-primary"
                         >
-                          <span className={cn(
-                            "flex h-6 w-6 items-center justify-center rounded-full border border-border/50 text-[0.55rem] font-semibold uppercase tracking-[0.12em]",
-                            statusClass(unit.status)
-                          )} title={`Unit ${units.findIndex(u => u.id === unit.id) + 1}`}>
-                            {String(units.findIndex(u => u.id === unit.id) + 1)}
+                          <span
+                            className={cn(
+                              "inline-flex items-center gap-2 px-2 py-1 rounded-sm text-sm font-semibold uppercase tracking-[0.06em]",
+                              statusClass(unit.status)
+                            )}
+                            title={`Unit ${units.findIndex(u => u.id === unit.id) + 1}`}
+                          >
+                            <span>{unit.marking ?? "—"}</span>
+                            <span className="ml-2 text-xs bg-muted/10 px-2 py-0.5 rounded-sm">#{units.findIndex(u => u.id === unit.id) + 1}</span>
                           </span>
                           <button
                             type="button"

@@ -15,12 +15,181 @@ local json = require 'dkjson'
 -- Попытка загрузить ImGui (может не быть установлен)
 local imgui_loaded, imgui = pcall(require, 'mimgui')
 local ffi_loaded, ffi = false, nil
+local mainWindow, inputBuffer
+
 if imgui_loaded then
     ffi_loaded, ffi = pcall(require, 'ffi')
+    
+    if ffi_loaded then
+        -- Инициализируем UI state сразу при загрузке
+        mainWindow = imgui.new.bool(false)
+        inputBuffer = {
+            unitMarking = imgui.new.char[64](),
+            situationType = imgui.new.char[64](),
+            targetId = imgui.new.int(0),
+        }
+    end
 end
+
+-- ПОЛЕ ДЛЯ СТАТА РЕНДЕРА
+local render_state = {
+    notified = false,
+    positioned = false
+}
+
+-- Глобальное состояние скрипта (защита от nil при раннем вызове)
+local state = state or {
+    playerNick = nil,
+    isAFK = false,
+    isInPanic = false,
+    currentUnit = nil,
+    currentSituation = nil,
+    trackingTarget = nil,
+    lastPosition = { x = 0, y = 0, z = 0 },
+    lastActivity = os.clock(),
+    allUnits = {},
+}
+
+-- Таймеры для периодических задач
+local timers = timers or {
+    lastUpdate = 0,
+    lastAFKCheck = 0,
+    lastLocationUpdate = 0,
+}
 
 encoding.default = 'CP1251'
 u8 = encoding.UTF8
+
+-- Safety guards / fallbacks for commonly used globals to avoid runtime errors
+CONFIG = CONFIG or {
+    API_URL = 'http://localhost:5000/api',
+    API_KEY = 'changeme-key',
+    UPDATE_INTERVAL = 5000,
+    AFK_CHECK_INTERVAL = 60000,
+    AFK_THRESHOLD = 300,
+    LOCATION_UPDATE_INTERVAL = 5000,
+    DEBUG_MODE = false,
+}
+
+-- Normalize API_URL: remove trailing slash and ensure it ends with /api
+do
+    if type(CONFIG.API_URL) == 'string' then
+        -- strip trailing slash
+        CONFIG.API_URL = CONFIG.API_URL:gsub('/+$', '')
+        -- if it doesn't end with /api, append it
+        if not CONFIG.API_URL:match('/api$') then
+            CONFIG.API_URL = CONFIG.API_URL .. '/api'
+        end
+    end
+end
+
+-- Ensure common libs exist (requests/json may not be present in some environments)
+requests = requests or {}
+if type(requests.get) ~= 'function' then
+    requests.get = function() return nil end
+end
+if type(requests.post) ~= 'function' then
+    requests.post = function() return nil end
+end
+if type(requests.put) ~= 'function' then
+    requests.put = function() return nil end
+end
+if type(requests.delete) ~= 'function' then
+    requests.delete = function() return nil end
+end
+
+json = json or { encode = function(v) return tostring(v) end, decode = function(s) return s end }
+
+-- Ensure lua_thread helper exists
+lua_thread = lua_thread or { create = function(f) pcall(f) end }
+
+-- Ensure sampAddChatMessage exists as fallback (avoid crashes when not running in SA-MP)
+sampAddChatMessage = sampAddChatMessage or function(text, color) print(text) end
+
+-- UTF-8 helper: safe decode/encode wrappers
+local function safe_u8_decode(s)
+    if type(u8) == 'table' and type(u8.decode) == 'function' then
+        return u8:decode(s)
+    elseif type(u8) == 'function' then
+        -- some bindings expose u8 as function
+        local ok, out = pcall(u8, s)
+        return ok and out or s
+    end
+    return s
+end
+
+-- Override notify functions to use UTF-8 when available
+local _sampAddChat = sampAddChatMessage
+function notify(msg)
+    local text = '[SAPD Tracker] {FFFFFF}' .. safe_u8_decode(tostring(msg or ''))
+    _sampAddChat(text, 0x3498DB)
+end
+function notifyError(msg)
+    local text = '[SAPD Tracker] {FF0000}' .. safe_u8_decode(tostring(msg or ''))
+    _sampAddChat(text, 0xFF0000)
+end
+function notifySuccess(msg)
+    local text = '[SAPD Tracker] {00FF00}' .. safe_u8_decode(tostring(msg or ''))
+    _sampAddChat(text, 0x00FF00)
+end
+function notifyWarning(msg)
+    local text = '[SAPD Tracker] {FFAA00}' .. safe_u8_decode(tostring(msg or ''))
+    _sampAddChat(text, 0xFFAA00)
+end
+
+-- Logging fallback and convenience wrappers
+if type(log) ~= 'function' then
+    function log(message)
+        local text = '[SAPD Tracker] ' .. tostring(message or '')
+        -- Prefer in-game chat if available for visibility, otherwise print
+        if CONFIG and CONFIG.DEBUG_MODE then
+            if type(sampAddChatMessage) == 'function' then
+                sampAddChatMessage(text, 0xAAAAAA)
+            else
+                print(text)
+            end
+        else
+            -- When not in debug mode, print to console to avoid spamming chat
+            if type(sampAddChatMessage) ~= 'function' then
+                print(text)
+            end
+        end
+    end
+end
+
+if type(logDebug) ~= 'function' then
+    function logDebug(msg)
+        if CONFIG and CONFIG.DEBUG_MODE then log('[DEBUG] ' .. tostring(msg)) end
+    end
+end
+if type(logInfo) ~= 'function' then
+    function logInfo(msg) log('[INFO] ' .. tostring(msg)) end
+end
+if type(logWarn) ~= 'function' then
+    function logWarn(msg) log('[WARN] ' .. tostring(msg)) end
+end
+if type(logError) ~= 'function' then
+    function logError(msg) log('[ERROR] ' .. tostring(msg)) end
+end
+
+-- Log level definitions and fallback writeLog implementation
+LOG_LEVELS = LOG_LEVELS or { DEBUG = 1, INFO = 2, WARN = 3, ERROR = 4 }
+currentLogLevel = currentLogLevel or (CONFIG and CONFIG.DEBUG_MODE and LOG_LEVELS.DEBUG or LOG_LEVELS.INFO)
+
+if type(writeLog) ~= 'function' then
+    function writeLog(level, message, data)
+        if not level or not message then return end
+        -- only print messages at or above the configured log level
+        if level < (currentLogLevel or LOG_LEVELS.INFO) then return end
+        local levelName = ({[LOG_LEVELS.DEBUG] = 'DEBUG', [LOG_LEVELS.INFO] = 'INFO', [LOG_LEVELS.WARN] = 'WARN', [LOG_LEVELS.ERROR] = 'ERROR'})[level] or 'LOG'
+        local text = string.format('[SAPD Tracker] [%s] %s', levelName, tostring(message))
+        if type(sampAddChatMessage) == 'function' and CONFIG and CONFIG.DEBUG_MODE then
+            sampAddChatMessage(text, 0xAAAAAA)
+        else
+            print(text)
+        end
+    end
+end
 
 -- Маленькие хелперы
 local function joinOrEmpty(tbl, sep)
@@ -30,119 +199,6 @@ local function joinOrEmpty(tbl, sep)
 end
 
 -- Простая URL-энкодировка для безопасного использования в путях
-local function renderMainWindow()
-    -- Minimal safe renderer: depend on the binding to call imgui.Process
-    if not imgui_loaded or not ffi_loaded then return end
-    if not mainWindow or not mainWindow[0] then return end
-
-    -- Set a sane default position/size on first use
-    imgui.SetNextWindowPos(imgui.ImVec2(50, 50), imgui.Cond.FirstUseEver)
-    imgui.SetNextWindowSize(imgui.ImVec2(600, 700), imgui.Cond.FirstUseEver)
-
-    local opened = imgui.Begin('SAPD Tracker', mainWindow, imgui.WindowFlags.NoCollapse)
-    -- draw contents when opened; always call End to keep stack balanced
-    if opened then
-        imgui.TextColored(imgui.ImVec4(0.2, 0.8, 1.0, 1.0), 'Officer: ' .. (state.playerNick or 'Unknown'))
-        imgui.Separator()
-
-        -- Unit management
-        if imgui.CollapsingHeader('Unit Management', imgui.TreeNodeFlags.DefaultOpen) then
-            if state.currentUnit then
-                imgui.TextColored(imgui.ImVec4(0.2, 1.0, 0.2, 1.0), 'Current Unit: ' .. state.currentUnit.marking)
-                imgui.Text('Status: ' .. (state.currentUnit.status or 'Code 5'))
-                imgui.Text('Members: ' .. joinOrEmpty(state.currentUnit.playerNicks, ', '))
-
-                imgui.Spacing()
-                if imgui.Button('Leave Unit', imgui.ImVec2(200, 30)) then
-                    leaveUnit(state.currentUnit.id)
-                end
-
-                imgui.Spacing()
-                imgui.Text('Quick Status Change:')
-                if imgui.Button('Code 2', imgui.ImVec2(90, 25)) then cmd_code2() end
-                imgui.SameLine()
-                if imgui.Button('Code 3', imgui.ImVec2(90, 25)) then cmd_code3() end
-                imgui.SameLine()
-                if imgui.Button('Code 4', imgui.ImVec2(90, 25)) then cmd_code4() end
-
-                if imgui.Button('Code 6', imgui.ImVec2(90, 25)) then cmd_code6() end
-                imgui.SameLine()
-                if imgui.Button('Code 7', imgui.ImVec2(90, 25)) then cmd_code7() end
-            else
-                imgui.TextColored(imgui.ImVec4(1.0, 0.5, 0.0, 1.0), 'Not in a unit')
-                imgui.Spacing()
-
-                imgui.InputText('Unit Marking', inputBuffer.unitMarking, 64)
-                if imgui.Button('Create Unit', imgui.ImVec2(200, 30)) then
-                    local marking = ffi.string(inputBuffer.unitMarking)
-                    if marking ~= '' then
-                        createUnit(marking)
-                    else
-                        notifyError('Enter unit marking!')
-                    end
-                end
-            end
-        end
-
-        imgui.Spacing()
-        imgui.Separator()
-
-        -- Situations
-        if imgui.CollapsingHeader('Situations', imgui.TreeNodeFlags.DefaultOpen) then
-            imgui.InputText('Type (911/code6/traffic/backup)', inputBuffer.situationType, 64)
-            if imgui.Button('Create Situation', imgui.ImVec2(200, 30)) then
-                local sitType = ffi.string(inputBuffer.situationType)
-                if sitType ~= '' then
-                    cmd_sit(sitType)
-                else
-                    notifyError('Enter situation type!')
-                end
-            end
-
-            imgui.Spacing()
-            if imgui.Button('PANIC BUTTON', imgui.ImVec2(200, 40)) then
-                cmd_panic()
-            end
-
-            imgui.Spacing()
-            imgui.InputInt('Target ID', inputBuffer.targetId)
-            if imgui.Button('Start Pursuit', imgui.ImVec2(200, 30)) then
-                local targetId = inputBuffer.targetId[0]
-                if targetId > 0 then
-                    cmd_prst(tostring(targetId))
-                else
-                    notifyError('Enter valid player ID!')
-                end
-            end
-
-            imgui.Spacing()
-            if state.isInPanic or state.trackingTarget then
-                if imgui.Button('Clear Panic/Pursuit', imgui.ImVec2(200, 30)) then
-                    cmd_clear()
-                end
-            end
-        end
-
-        imgui.Spacing()
-        imgui.Separator()
-
-        -- Info
-        if imgui.CollapsingHeader('Info') then
-            imgui.Text('AFK Status: ' .. (state.isAFK and 'AFK' or 'Active'))
-            local x, y, z = getCharCoordinates(PLAYER_PED)
-            local location = getLocationName(x, y, z)
-            imgui.Text('Location: ' .. location)
-            imgui.Text('Coords: ' .. string.format('%.1f, %.1f, %.1f', x, y, z))
-        end
-
-        imgui.Spacing()
-        if imgui.Button('Close Menu', imgui.ImVec2(120, 28)) then
-            if mainWindow then mainWindow[0] = false end
-        end
-    end
-    imgui.End()
-end
-end
 if type(logWarn) ~= 'function' and type(writeLog) == 'function' then
     function logWarn(message, data) writeLog(LOG_LEVELS.WARN, message, data) end
 end
@@ -165,21 +221,8 @@ function transliterate(text)
     return result
 end
 
-function notify(message)
-    sampAddChatMessage('[SAPD Tracker] {FFFFFF}' .. transliterate(message), 0x3498DB)
-end
-
-function notifyError(message)
-    sampAddChatMessage('[SAPD Tracker] {FF0000}' .. transliterate(message), 0xFF0000)
-end
-
-function notifySuccess(message)
-    sampAddChatMessage('[SAPD Tracker] {00FF00}' .. transliterate(message), 0x00FF00)
-end
-
-function notifyWarning(message)
-    sampAddChatMessage('[SAPD Tracker] {FFAA00}' .. transliterate(message), 0xFFAA00)
-end
+-- Note: notification wrappers using safe UTF-8 decoding are defined earlier
+-- (they prefer u8.decode when available, and fall back to transliterate)
 
 -- Звуковой сигнал
 function playSound(soundId)
@@ -394,21 +437,31 @@ function apiRequest(method, endpoint, data, callback)
         local startTime = os.clock()
         local response
 
+        local ok, resp_or_err
         if method == 'GET' then
-            response = requests.get(url, {headers = headers})
+            ok, resp_or_err = pcall(requests.get, url, {headers = headers})
         elseif method == 'POST' then
-            response = requests.post(url, {
+            ok, resp_or_err = pcall(requests.post, url, {
                 headers = headers,
                 data = json.encode(data)
             })
         elseif method == 'PUT' then
-            response = requests.put(url, {
+            ok, resp_or_err = pcall(requests.put, url, {
                 headers = headers,
                 data = json.encode(data)
             })
         elseif method == 'DELETE' then
-            response = requests.delete(url, {headers = headers})
+            ok, resp_or_err = pcall(requests.delete, url, {headers = headers})
         end
+
+        if not ok then
+            -- resp_or_err contains the error message from requests
+            logError('HTTP request failed: ' .. tostring(resp_or_err))
+            if type(callback) == 'function' then callback({status = 0, error = tostring(resp_or_err)}, nil) end
+            return
+        end
+
+        local response = resp_or_err
 
         local elapsed = (os.clock() - startTime) * 1000
 
@@ -684,14 +737,14 @@ function createPanic()
         end
         state.currentSituation = resp
         state.isInPanic = true
-        if state.currentUnit then joinSituation(resp.id) end
+        if state.currentUnit then joinSituation(resp.id, 'Code 0') end
         notifySuccess('Panic button activated!')
         playSound('panic')
         notifyError('PANIC! Officer ' .. state.playerNick .. ' in danger at ' .. locationName .. '!')
     end)
 end
 
-function joinSituation(situationId)
+function joinSituation(situationId, desiredStatus)
     if not state.currentUnit then
         notifyError('You must be in a unit!')
         return
@@ -702,7 +755,8 @@ function joinSituation(situationId)
             logError('joinSituation failed', err)
             return
         end
-        updateUnitStatus(state.currentUnit.id, 'Code 3')
+        -- If a desiredStatus is provided (e.g., 'Code 0' for panic), set it; otherwise default to Code 3
+        updateUnitStatus(state.currentUnit.id, desiredStatus or 'Code 3')
         notifySuccess('Joined situation')
     end)
 end
@@ -712,79 +766,53 @@ end
 -- ============================================================================
 
 local function renderMainWindow()
-    if not imgui_loaded or not mainWindow then return end
-
-    -- If menu is open, force position/size every frame so it appears on-screen
+    -- Проверки на доступность ImGui
+    if not imgui_loaded or not ffi_loaded then return end
+    if not mainWindow then return end
+    
+    -- Рендерим только если окно открыто
     if mainWindow[0] then
-        pcall(function()
-            imgui.SetNextWindowPos(imgui.ImVec2(50, 50), imgui.Cond.Always)
-            imgui.SetNextWindowSize(imgui.ImVec2(600, 700), imgui.Cond.Always)
-        end)
-    else
-        -- ensure first-use size preserved when closed
-        imgui.SetNextWindowSize(imgui.ImVec2(500, 600), imgui.Cond.FirstUseEver)
-    end
-
-    -- Call Begin in pcall to avoid crashing if ImGui has issues; capture returned 'opened' boolean
-    local ok, opened = pcall(imgui.Begin, 'SAPD Tracker', mainWindow, imgui.WindowFlags.NoCollapse)
-    if not ok then
-        logError('renderMainWindow: imgui.Begin call failed: ' .. tostring(opened))
-        return
-    end
-
-    -- One-time notify to confirm render is invoked and whether Begin allowed drawing
-    if not render_state.notified then
-        render_state.notified = true
-        logDebug('renderMainWindow: imgui.Begin returned: ' .. tostring(opened))
-        notify('renderMainWindow invoked (Begin returned: ' .. tostring(opened) .. ')')
-    end
-
-    -- If debug mode is on, also show a minimal debug window to verify ImGui output
-    if CONFIG.DEBUG_MODE then
-        local ok2, dbgOpened = pcall(imgui.Begin, 'SAPD Tracker Debug', imgui.new.bool(true), imgui.WindowFlags.AlwaysAutoResize + imgui.WindowFlags.NoCollapse)
-        if ok2 and dbgOpened then
-            imgui.Text('Debug window visible - ImGui rendering works')
-        end
-        if ok2 then imgui.End() end
-    end
-
-    if opened then
+        imgui.SetNextWindowPos(imgui.ImVec2(50, 50), imgui.Cond.FirstUseEver)
+        imgui.SetNextWindowSize(imgui.ImVec2(600, 700), imgui.Cond.FirstUseEver)
+        
+        imgui.Begin(u8'SAPD Tracker', mainWindow, imgui.WindowFlags.NoCollapse)
+        
         -- Информация о текущем статусе
-        imgui.TextColored(imgui.ImVec4(0.2, 0.8, 1.0, 1.0), 'Officer: ' .. (state.playerNick or 'Unknown'))
+        imgui.TextColored(imgui.ImVec4(0.2, 0.8, 1.0, 1.0), u8('Officer: ' .. (state.playerNick or 'Unknown')))
         imgui.Separator()
         
-        -- Секция Unit
-        if imgui.CollapsingHeader('Unit Management', imgui.TreeNodeFlags.DefaultOpen) then
+        -- Секция Unit Management
+        if imgui.CollapsingHeader(u8'Unit Management', imgui.TreeNodeFlags.DefaultOpen) then
             if state.currentUnit then
-                imgui.TextColored(imgui.ImVec4(0.2, 1.0, 0.2, 1.0), 'Current Unit: ' .. state.currentUnit.marking)
-                imgui.Text('Status: ' .. (state.currentUnit.status or 'Code 5'))
-                imgui.Text('Members: ' .. joinOrEmpty(state.currentUnit.playerNicks, ', '))
+                imgui.TextColored(imgui.ImVec4(0.2, 1.0, 0.2, 1.0), u8('Current Unit: ' .. state.currentUnit.marking))
+                imgui.Text(u8('Status: ' .. (state.currentUnit.status or 'Code 5')))
+                imgui.Text(u8('Members: ' .. joinOrEmpty(state.currentUnit.playerNicks, ', ')))
                 
                 imgui.Spacing()
-                if imgui.Button('Leave Unit', imgui.ImVec2(200, 30)) then
+                if imgui.Button(u8'Leave Unit', imgui.ImVec2(200, 30)) then
                     leaveUnit(state.currentUnit.id)
                 end
                 
                 imgui.Spacing()
-                imgui.Text('Quick Status Change:')
-                if imgui.Button('Code 2', imgui.ImVec2(90, 25)) then cmd_code2() end
+                imgui.Text(u8'Quick Status Change:')
+                if imgui.Button(u8'Code 2', imgui.ImVec2(90, 25)) then cmd_code2() end
                 imgui.SameLine()
-                if imgui.Button('Code 3', imgui.ImVec2(90, 25)) then cmd_code3() end
+                if imgui.Button(u8'Code 3', imgui.ImVec2(90, 25)) then cmd_code3() end
                 imgui.SameLine()
-                if imgui.Button('Code 4', imgui.ImVec2(90, 25)) then cmd_code4() end
+                if imgui.Button(u8'Code 4', imgui.ImVec2(90, 25)) then cmd_code4() end
                 
-                if imgui.Button('Code 6', imgui.ImVec2(90, 25)) then cmd_code6() end
+                if imgui.Button(u8'Code 6', imgui.ImVec2(90, 25)) then cmd_code6() end
                 imgui.SameLine()
-                if imgui.Button('Code 7', imgui.ImVec2(90, 25)) then cmd_code7() end
+                if imgui.Button(u8'Code 7', imgui.ImVec2(90, 25)) then cmd_code7() end
             else
-                imgui.TextColored(imgui.ImVec4(1.0, 0.5, 0.0, 1.0), 'Not in a unit')
+                imgui.TextColored(imgui.ImVec4(1.0, 0.5, 0.0, 1.0), u8'Not in a unit')
                 imgui.Spacing()
                 
-                imgui.InputText('Unit Marking', inputBuffer.unitMarking, 64)
-                if imgui.Button('Create Unit', imgui.ImVec2(200, 30)) then
-                    local marking = ffi.string(inputBuffer.unitMarking)
+                imgui.InputText(u8'Unit Marking', inputBuffer.unitMarking, 64)
+                if imgui.Button(u8'Create Unit', imgui.ImVec2(200, 30)) then
+                    local marking = u8:decode(ffi.string(inputBuffer.unitMarking))
                     if marking ~= '' then
-                        createUnit(marking)
+                        createUnit(marking, {})
                     else
                         notifyError('Enter unit marking!')
                     end
@@ -796,10 +824,10 @@ local function renderMainWindow()
         imgui.Separator()
         
         -- Секция Situations
-        if imgui.CollapsingHeader('Situations', imgui.TreeNodeFlags.DefaultOpen) then
-            imgui.InputText('Type (911/code6/traffic/backup)', inputBuffer.situationType, 64)
-            if imgui.Button('Create Situation', imgui.ImVec2(200, 30)) then
-                local sitType = ffi.string(inputBuffer.situationType)
+        if imgui.CollapsingHeader(u8'Situations', imgui.TreeNodeFlags.DefaultOpen) then
+            imgui.InputText(u8'Type (911/code6/traffic/backup)', inputBuffer.situationType, 64)
+            if imgui.Button(u8'Create Situation', imgui.ImVec2(200, 30)) then
+                local sitType = u8:decode(ffi.string(inputBuffer.situationType))
                 if sitType ~= '' then
                     cmd_sit(sitType)
                 else
@@ -808,13 +836,13 @@ local function renderMainWindow()
             end
             
             imgui.Spacing()
-            if imgui.Button('PANIC BUTTON', imgui.ImVec2(200, 40)) then
+            if imgui.Button(u8'PANIC BUTTON', imgui.ImVec2(200, 40)) then
                 cmd_panic()
             end
             
             imgui.Spacing()
-            imgui.InputInt('Target ID', inputBuffer.targetId)
-            if imgui.Button('Start Pursuit', imgui.ImVec2(200, 30)) then
+            imgui.InputInt(u8'TARGET ID', inputBuffer.targetId)
+            if imgui.Button(u8'Start Pursuit', imgui.ImVec2(200, 30)) then
                 local targetId = inputBuffer.targetId[0]
                 if targetId > 0 then
                     cmd_prst(tostring(targetId))
@@ -825,7 +853,7 @@ local function renderMainWindow()
             
             imgui.Spacing()
             if state.isInPanic or state.trackingTarget then
-                if imgui.Button('Clear Panic/Pursuit', imgui.ImVec2(200, 30)) then
+                if imgui.Button(u8'Clear Panic/Pursuit', imgui.ImVec2(200, 30)) then
                     cmd_clear()
                 end
             end
@@ -835,18 +863,17 @@ local function renderMainWindow()
         imgui.Separator()
         
         -- Информация
-        if imgui.CollapsingHeader('Info') then
-            imgui.Text('AFK Status: ' .. (state.isAFK and 'AFK' or 'Active'))
+        if imgui.CollapsingHeader(u8'Info') then
+            imgui.Text(u8('AFK Status: ' .. (state.isAFK and 'AFK' or 'Active')))
             local x, y, z = getCharCoordinates(PLAYER_PED)
             local location = getLocationName(x, y, z)
-            imgui.Text('Location: ' .. location)
-            imgui.Text('Coords: ' .. string.format('%.1f, %.1f, %.1f', x, y, z))
+            imgui.Text(u8('Location: ' .. location))
+            imgui.Text(u8(string.format('Coords: %.1f, %.1f, %.1f', x, y, z)))
         end
-
+        
         imgui.Spacing()
-        -- Close button at the bottom
-        if imgui.Button('Close Menu', imgui.ImVec2(120, 28)) then
-            if mainWindow then mainWindow[0] = false end
+        if imgui.Button(u8'Close Menu', imgui.ImVec2(120, 28)) then
+            mainWindow[0] = false
         end
         
         imgui.End()
@@ -857,48 +884,31 @@ end
 -- КОМАНДЫ
 -- ============================================================================
 
+-- ИСПРАВЛЕННАЯ КОМАНДА /unit
 function cmd_unit(param)
-    if imgui_loaded then
-        -- Try to lazily initialize ImGui UI state if necessary
-        if not ffi_loaded then
-            notifyError('ImGui present but FFI not available. UI cannot be opened.')
-            logWarn('cmd_unit: ImGui present but ffi not loaded')
+    if imgui_loaded and ffi_loaded then
+        -- Проверяем инициализацию
+        if not mainWindow or not inputBuffer then
+            notifyError('ImGui UI initialization failed!')
+            logError('cmd_unit: mainWindow or inputBuffer is nil')
             return
         end
-
-        if not mainWindow then
-            -- Create UI state lazily (in case it wasn't possible during startup)
-            logDebug('cmd_unit: initializing ImGui UI state')
-            notify('Initializing UI state...')
-            mainWindow = imgui.new.bool(false)
-            inputBuffer = {
-                unitMarking = imgui.new.char[64](),
-                situationType = imgui.new.char[64](),
-                targetId = imgui.new.int(0),
-            }
-            -- Ensure render function is registered
-            imgui.Process = renderMainWindow
-            logDebug('cmd_unit: ImGui.Process set to renderMainWindow')
-            notify('UI initialized (menu is hidden by default). Use /unit to open it.')
-        else
-            logDebug('cmd_unit: ImGui UI state already initialized')
-        end
-
-        -- Toggle the UI window
+        
+        -- Переключаем видимость окна
         mainWindow[0] = not mainWindow[0]
+        
         if mainWindow[0] then
-            logDebug('cmd_unit: menu opened')
             notify('SAPD Tracker menu opened')
+            logDebug('cmd_unit: menu opened')
         else
-            logDebug('cmd_unit: menu closed')
             notify('SAPD Tracker menu closed')
+            logDebug('cmd_unit: menu closed')
         end
         return
     end
     
-    -- Текстовая версия команды
+    -- Текстовая версия команды (если ImGui недоступен)
     if not param or param == '' then
-        -- Показываем информацию
         notify('=== UNIT MENU ===')
         if state.currentUnit then
             notify('Current Unit: ' .. state.currentUnit.marking)
@@ -915,7 +925,6 @@ function cmd_unit(param)
         return
     end
     
-    -- Разбираем параметры
     local args = {}
     for word in param:gmatch("%S+") do
         table.insert(args, word)
@@ -1154,34 +1163,25 @@ function main()
     sampRegisterChatCommand('debug', cmd_debug)
     sampRegisterChatCommand('ui_status', cmd_ui_status)
     
-        if imgui_loaded then
-            -- If ImGui was loaded but FFI wasn't available at the top of the script
-            -- we can't create the cdata buffers. Inform the user and only enable
-            -- the interactive UI when FFI is available.
-            if not ffi_loaded then
-                notify('Tracker started! ImGui found but FFI is missing — UI disabled')
-                notifyWarning('ImGui present but FFI not loaded - install LuaJIT/ffi or mimgui with FFI support')
-                logWarn('ImGui present but ffi not loaded; interactive UI disabled')
-            else
-                notify('Tracker started! Use /unit to open menu')
-                logDebug('ImGui loaded successfully')
-                -- Ensure ImGui state is initialized (in case it wasn't earlier)
-                if not mainWindow then
-                    mainWindow = imgui.new.bool(false)
-                    inputBuffer = {
-                        unitMarking = imgui.new.char[64](),
-                        situationType = imgui.new.char[64](),
-                        targetId = imgui.new.int(0),
-                    }
-                end
-                -- Регистрируем функцию рендера один раз
-                imgui.Process = renderMainWindow
-            end
-        else
-            notify('Tracker started! Use /unit create [marking] to create unit')
-            notifyWarning('ImGui not loaded - using text commands only')
-            logDebug('ImGui not available - text mode enabled')
-        end
+    -- Проверяем статус ImGui
+    if imgui_loaded and ffi_loaded then
+        notify('Tracker started! Use /unit to open menu')
+        logDebug('ImGui loaded successfully')
+        
+        -- Регистрируем функцию рендера
+        imgui.OnFrame(
+            function() return mainWindow[0] end,
+            renderMainWindow
+        )
+    elseif imgui_loaded and not ffi_loaded then
+        notify('Tracker started! ImGui found but FFI is missing')
+        notifyWarning('Install LuaJIT or mimgui with FFI support for UI')
+        logWarn('ImGui present but ffi not loaded')
+    else
+        notify('Tracker started! Use /unit create [marking] to create unit')
+        notifyWarning('ImGui not loaded - using text commands only')
+        logDebug('ImGui not available - text mode enabled')
+    end
     
     log('Debug mode: Use /debug on to enable detailed logging')
     logDebug('Configuration loaded: API=' .. CONFIG.API_URL)
