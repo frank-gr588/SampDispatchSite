@@ -7,13 +7,20 @@ script_version('3.0')
 
 require 'lib.sampfuncs'
 require 'lib.moonloader'
-local ffi = require 'ffi'
-local imgui = require 'mimgui'
+
+-- Try to load optional dependencies with error handling
+local ffi_loaded, ffi = pcall(require, 'ffi')
+local imgui_loaded, imgui = pcall(require, 'mimgui')
 local http = require('socket.http')
 local ltn12 = require('ltn12')
 local encoding = require('encoding')
 encoding.default = 'CP1251'
 u8 = encoding.UTF8
+
+-- Check if imgui is available
+if not imgui_loaded then
+    print('[NYD] Warning: ImGui not available. Install mimgui library for GUI support.')
+end
 
 -- ================== CONFIG ==================
 local API_BASE = 'http://127.0.0.1:5000'
@@ -37,17 +44,30 @@ local channels = {}
 local lastRefresh = 0
 
 -- ================== ImGui STATE ==================
-local main_window = imgui.new.bool(false)
-local units_window = imgui.new.bool(false)
-local situations_window = imgui.new.bool(false)
-local create_unit_window = imgui.new.bool(false)
-local create_situation_window = imgui.new.bool(false)
+local main_window = nil
+local units_window = nil
+local situations_window = nil
+local create_unit_window = nil
+local create_situation_window = nil
+local new_unit_marking = nil
+local new_situation_type = nil
+local new_situation_location = nil
+local new_situation_title = nil
 
--- Формы создания
-local new_unit_marking = imgui.new.char[16]()
-local new_situation_type = imgui.new.int(0)
-local new_situation_location = imgui.new.char[128]()
-local new_situation_title = imgui.new.char[128]()
+if imgui_loaded then
+	main_window = imgui.new.bool(false)
+	units_window = imgui.new.bool(false)
+	situations_window = imgui.new.bool(false)
+	create_unit_window = imgui.new.bool(false)
+	create_situation_window = imgui.new.bool(false)
+	
+	-- Формы создания
+	new_unit_marking = imgui.new.char[16]()
+	new_situation_type = imgui.new.int(0)
+	new_situation_location = imgui.new.char[128]()
+	new_situation_title = imgui.new.char[128]()
+end
+
 local situation_types = {'Code7', 'Pursuit', 'TrafficStop', 'Code6', '911', 'Other'}
 local situation_types_str = 'Code7\0Pursuit\0TrafficStop\0Code6\0911\0Other\0'
 
@@ -708,60 +728,63 @@ local function draw_create_situation_window()
 end
 
 -- ================== MAIN LOOP ==================
-imgui.OnFrame(
-	function() return main_window[0] end,
-	function(player)
-		local ok, err = pcall(draw_main_window)
-		if not ok then
-			sampAddChatMessage('[NYD] Error in main window: ' .. tostring(err), 0xFF6666)
-			main_window[0] = false
+-- Only register ImGui handlers if ImGui is available
+if imgui_loaded then
+	imgui.OnFrame(
+		function() return main_window[0] end,
+		function(player)
+			local ok, err = pcall(draw_main_window)
+			if not ok then
+				sampAddChatMessage('[NYD] Error in main window: ' .. tostring(err), 0xFF6666)
+				main_window[0] = false
+			end
 		end
-	end
-)
+	)
 
-imgui.OnFrame(
-	function() return units_window[0] end,
-	function(player)
-		local ok, err = pcall(draw_units_window)
-		if not ok then
-			sampAddChatMessage('[NYD] Error in units window: ' .. tostring(err), 0xFF6666)
-			units_window[0] = false
+	imgui.OnFrame(
+		function() return units_window[0] end,
+		function(player)
+			local ok, err = pcall(draw_units_window)
+			if not ok then
+				sampAddChatMessage('[NYD] Error in units window: ' .. tostring(err), 0xFF6666)
+				units_window[0] = false
+			end
 		end
-	end
-)
+	)
 
-imgui.OnFrame(
-	function() return situations_window[0] end,
-	function(player)
-		local ok, err = pcall(draw_situations_window)
-		if not ok then
-			sampAddChatMessage('[NYD] Error in situations window: ' .. tostring(err), 0xFF6666)
-			situations_window[0] = false
+	imgui.OnFrame(
+		function() return situations_window[0] end,
+		function(player)
+			local ok, err = pcall(draw_situations_window)
+			if not ok then
+				sampAddChatMessage('[NYD] Error in situations window: ' .. tostring(err), 0xFF6666)
+				situations_window[0] = false
+			end
 		end
-	end
-)
+	)
 
-imgui.OnFrame(
-	function() return create_unit_window[0] end,
-	function(player)
-		local ok, err = pcall(draw_create_unit_window)
-		if not ok then
-			sampAddChatMessage('[NYD] Error in create unit window: ' .. tostring(err), 0xFF6666)
-			create_unit_window[0] = false
+	imgui.OnFrame(
+		function() return create_unit_window[0] end,
+		function(player)
+			local ok, err = pcall(draw_create_unit_window)
+			if not ok then
+				sampAddChatMessage('[NYD] Error in create unit window: ' .. tostring(err), 0xFF6666)
+				create_unit_window[0] = false
+			end
 		end
-	end
-)
+	)
 
-imgui.OnFrame(
-	function() return create_situation_window[0] end,
-	function(player)
-		local ok, err = pcall(draw_create_situation_window)
-		if not ok then
-			sampAddChatMessage('[NYD] Error in create situation window: ' .. tostring(err), 0xFF6666)
-			create_situation_window[0] = false
+	imgui.OnFrame(
+		function() return create_situation_window[0] end,
+		function(player)
+			local ok, err = pcall(draw_create_situation_window)
+			if not ok then
+				sampAddChatMessage('[NYD] Error in create situation window: ' .. tostring(err), 0xFF6666)
+				create_situation_window[0] = false
+			end
 		end
-	end
-)
+	)
+end
 
 function main()
 	while not isSampAvailable() do wait(100) end
@@ -771,15 +794,27 @@ function main()
 	
 	-- Команды
 	sampRegisterChatCommand('nyd', function()
-		main_window[0] = not main_window[0]
+		if imgui_loaded and main_window then
+			main_window[0] = not main_window[0]
+		else
+			msg('ImGui not available. Install mimgui library.', 0xFF6666)
+		end
 	end)
 	
 	sampRegisterChatCommand('units', function()
-		units_window[0] = not units_window[0]
+		if imgui_loaded and units_window then
+			units_window[0] = not units_window[0]
+		else
+			msg('ImGui not available. Install mimgui library.', 0xFF6666)
+		end
 	end)
 	
 	sampRegisterChatCommand('sits', function()
-		situations_window[0] = not situations_window[0]
+		if imgui_loaded and situations_window then
+			situations_window[0] = not situations_window[0]
+		else
+			msg('ImGui not available. Install mimgui library.', 0xFF6666)
+		end
 	end)
 	
 	sampRegisterChatCommand('createunit', function(arg)
