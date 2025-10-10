@@ -7,11 +7,26 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 // Simple API client for backend
-export const API_BASE: string = (import.meta as any).env?.VITE_API_BASE ?? ""; // same-origin by default
+// Default to localhost:5000 when VITE_API_BASE is not provided to make
+// local development easier (matches README). Explicit VITE_API_BASE will
+// still override this value in CI/hosting environments.
+export const API_BASE: string = (import.meta as any).env?.VITE_API_BASE ?? "http://localhost:5000";
+
+async function readResponseBodySafely(res: Response) {
+  try {
+    const text = await res.text();
+    return text;
+  } catch {
+    return '<unable to read response body>';
+  }
+}
 
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`GET ${path} ${res.status}`);
+  if (!res.ok) {
+    const body = await readResponseBodySafely(res);
+    throw new Error(`GET ${path} ${res.status} - ${body}`);
+  }
   return res.json();
 }
 
@@ -24,7 +39,10 @@ export async function apiPost<T>(path: string, body?: any, apiKey?: string): Pro
     },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`POST ${path} ${res.status}`);
+  if (!res.ok) {
+    const text = await readResponseBodySafely(res);
+    throw new Error(`POST ${path} ${res.status} - ${text}`);
+  }
   return res.status === 204 ? (undefined as unknown as T) : res.json();
 }
 

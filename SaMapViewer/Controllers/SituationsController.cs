@@ -5,6 +5,7 @@ using SaMapViewer.Models;
 using SaMapViewer.Services;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace SaMapViewer.Controllers
 {
@@ -15,13 +16,15 @@ namespace SaMapViewer.Controllers
         private readonly SituationsService _situations;
         private readonly IHubContext<CoordsHub> _hub;
         private readonly HistoryService _history;
+        private readonly TacticalChannelsService _channels;
         private readonly Microsoft.Extensions.Options.IOptions<SaMapViewer.Services.SaOptions> _options;
 
-        public SituationsController(SituationsService situations, IHubContext<CoordsHub> hub, HistoryService history, Microsoft.Extensions.Options.IOptions<SaMapViewer.Services.SaOptions> options)
+        public SituationsController(SituationsService situations, IHubContext<CoordsHub> hub, HistoryService history, TacticalChannelsService channels, Microsoft.Extensions.Options.IOptions<SaMapViewer.Services.SaOptions> options)
         {
             _situations = situations;
             _hub = hub;
             _history = history;
+            _channels = channels;
             _options = options;
         }
 
@@ -39,6 +42,28 @@ namespace SaMapViewer.Controllers
             if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
             if (string.IsNullOrWhiteSpace(dto?.Type)) return BadRequest();
             var sit = _situations.Create(dto.Type, dto.Metadata ?? new Dictionary<string, string>());
+
+            // If metadata contains a channel name, attach that channel to the newly created situation
+            try
+            {
+                if (dto?.Metadata != null && dto.Metadata.TryGetValue("channel", out var channelName) && !string.IsNullOrWhiteSpace(channelName))
+                {
+                    var ch = _channels.GetAll().FirstOrDefault(c => string.Equals(c.Name, channelName, StringComparison.OrdinalIgnoreCase));
+                    if (ch != null)
+                    {
+                        _channels.AttachSituation(ch.Id, sit.Id);
+                        _channels.SetBusy(ch.Id, true);
+                        _hub.Clients.All.SendAsync("ChannelUpdated", ch);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                string? chName = null;
+                if (dto?.Metadata != null && dto.Metadata.TryGetValue("channel", out var v)) chName = v;
+                _ = _history.AppendAsync(new { type = "situation_channel_attach_error", situationId = sit.Id, channel = chName, error = ex.Message });
+            }
+
             _hub.Clients.All.SendAsync("SituationCreated", sit);
             _ = _history.AppendAsync(new { type = "situation_create", id = sit.Id, sit.Type, sit.Metadata });
             return sit;
@@ -49,7 +74,9 @@ namespace SaMapViewer.Controllers
         {
             if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
             if (string.IsNullOrWhiteSpace(dto?.Nick)) return BadRequest();
+            #pragma warning disable CS0612 // Suppress obsolete warning for Join (kept for compatibility)
             _situations.Join(id, dto.Nick);
+            #pragma warning restore CS0612
             if (_situations.TryGet(id, out var s))
             {
                 _hub.Clients.All.SendAsync("SituationUpdated", s);
@@ -64,7 +91,9 @@ namespace SaMapViewer.Controllers
         {
             if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
             if (string.IsNullOrWhiteSpace(dto?.Nick)) return BadRequest();
+            #pragma warning disable CS0612 // Suppress obsolete warning for Leave (kept for compatibility)
             _situations.Leave(id, dto.Nick);
+            #pragma warning restore CS0612
             if (_situations.TryGet(id, out var s))
             {
                 _hub.Clients.All.SendAsync("SituationUpdated", s);
@@ -100,10 +129,53 @@ namespace SaMapViewer.Controllers
             if (situation == null)
                 return NotFound($"Situation with ID {id} not found");
 
+            // Save old channel name for re-binding logic
+            situation.Metadata.TryGetValue("channel", out var oldChannelName);
+
             // Обновляем метаданные
             foreach (var kvp in dto.Metadata)
             {
                 situation.Metadata[kvp.Key] = kvp.Value;
+            }
+
+            // After updating metadata, check channel binding changes
+            situation.Metadata.TryGetValue("channel", out var newChannelName);
+            oldChannelName = string.IsNullOrWhiteSpace(oldChannelName) ? null : oldChannelName;
+            newChannelName = string.IsNullOrWhiteSpace(newChannelName) ? null : newChannelName;
+
+            if (!string.Equals(oldChannelName, newChannelName, StringComparison.Ordinal))
+            {
+                try
+                {
+                    // Detach old channel if necessary
+                    if (!string.IsNullOrEmpty(oldChannelName))
+                    {
+                        var oldCh = _channels.GetAll().FirstOrDefault(c => string.Equals(c.Name, oldChannelName, StringComparison.OrdinalIgnoreCase));
+                        if (oldCh != null && oldCh.SituationId == id)
+                        {
+                            _channels.AttachSituation(oldCh.Id, null);
+                            _channels.SetBusy(oldCh.Id, false);
+                            _hub.Clients.All.SendAsync("ChannelUpdated", oldCh);
+                        }
+                    }
+
+                    // Attach new channel
+                    if (!string.IsNullOrEmpty(newChannelName))
+                    {
+                        var newCh = _channels.GetAll().FirstOrDefault(c => string.Equals(c.Name, newChannelName, StringComparison.OrdinalIgnoreCase));
+                        if (newCh != null)
+                        {
+                            _channels.AttachSituation(newCh.Id, id);
+                            _channels.SetBusy(newCh.Id, true);
+                            _hub.Clients.All.SendAsync("ChannelUpdated", newCh);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Don't fail the metadata update if channel sync fails; log to history and continue
+                    _ = _history.AppendAsync(new { type = "situation_channel_sync_error", situationId = id, oldChannel = oldChannelName, newChannel = newChannelName, error = ex.Message });
+                }
             }
 
             _hub.Clients.All.SendAsync("SituationUpdated", situation);
@@ -186,6 +258,21 @@ namespace SaMapViewer.Controllers
             var situation = _situations.GetSituation(id);
             if (situation == null)
                 return NotFound($"Situation with ID {id} not found");
+            // Detach any tactical channel attached to this situation
+            try
+            {
+                var channels = _channels.GetAll();
+                foreach (var ch in channels.Where(c => c.SituationId == id).ToList())
+                {
+                    _channels.AttachSituation(ch.Id, null);
+                    _channels.SetBusy(ch.Id, false);
+                    _hub.Clients.All.SendAsync("ChannelUpdated", ch);
+                }
+            }
+            catch (Exception ex)
+            {
+                _ = _history.AppendAsync(new { type = "situation_channel_detach_error", situationId = id, error = ex.Message });
+            }
 
             _situations.RemoveSituation(id);
             _hub.Clients.All.SendAsync("SituationDeleted", new { id });

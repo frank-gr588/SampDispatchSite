@@ -458,6 +458,11 @@ export default function Index() {
           if (next) metadata.location = next;
           else delete metadata.location;
         }
+        if (updates.notes !== undefined) {
+          const next = normalize(updates.notes as string | undefined);
+          if (next) metadata.notes = next;
+          else delete metadata.notes;
+        }
         if (updates.channel !== undefined) {
           const next = normalize(updates.channel);
           if (!next || next.toLowerCase() === "нет канала") delete metadata.channel;

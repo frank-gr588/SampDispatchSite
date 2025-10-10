@@ -78,6 +78,28 @@ export function TacticalChannels({ className }: TacticalChannelsProps) {
       });
 
       if (!response.ok) {
+        // If channel id not found (404) maybe ids changed — refresh channels and try to find by name
+        if (response.status === 404) {
+          console.warn('[TacticalChannels] channel id not found, refreshing channels and retrying by name');
+          await refreshTacticalChannels();
+          const found = channels.find(c => c.id === channelId);
+          if (!found) {
+            // Try lookup by name in freshly loaded channels
+            const byName = channels.find(c => c.name === channels.find(ch => ch.id === channelId)?.name);
+            if (byName) {
+              const retry = await fetch(`/api/channels/${byName.id}/notes`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json", "X-API-Key": "changeme-key" },
+                body: JSON.stringify({ notes: editNotes.trim() })
+              });
+              if (!retry.ok) throw new Error(`Failed to update notes on retry: ${retry.status}`);
+              await refreshTacticalChannels();
+              setEditingChannelId(null);
+              setEditNotes("");
+              return;
+            }
+          }
+        }
         throw new Error(`Failed to update notes: ${response.status}`);
       }
 

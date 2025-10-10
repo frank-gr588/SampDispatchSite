@@ -92,7 +92,7 @@ const sanitizeSituation = (situation: SituationDto): SituationDto => ({
 
 export function SituationsManagement({ className }: SituationsManagementProps) {
   // Используем глобальное состояние из Context
-  const { situations, setSituations, units, refreshSituations, refreshUnits, isLoading: globalLoading } = useData();
+  const { situations, setSituations, units, refreshSituations, refreshUnits, refreshTacticalChannels, isLoading: globalLoading } = useData();
   
   const [filteredSituations, setFilteredSituations] = useState<SituationDto[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
@@ -204,32 +204,93 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
   };
 
   const updateSituationChannel = async (situation: SituationDto, channel: string) => {
+    console.debug('[SituationsManagement] updateSituationChannel called', { situationId: situation?.id, channel });
+    // Optimistic UI update: immediately apply the channel locally so the UI feels instant.
+    const previousMetadata = situation?.metadata ? { ...(situation.metadata as Record<string, string>) } : {};
+    const newMetadata = { ...(previousMetadata as Record<string, string>) };
+    if (channel && channel !== "none") {
+      newMetadata.channel = channel;
+    } else {
+      delete newMetadata.channel;
+    }
+
+    // Apply optimistic changes locally
+    setSelectedChannel(channel);
+    setSelectedSituation(prev => prev ? { ...prev, metadata: newMetadata } : prev);
+    setSituations(prev => Array.isArray(prev) ? prev.map(s => (String(s?.id) === String(situation.id) ? { ...s, metadata: newMetadata } : s)) : prev);
+
+    // Send request in background; if it fails, revert optimistic changes and notify user
     try {
-      const metadata = { ...(situation.metadata ?? {}) } as Record<string, string>;
-      if (channel && channel !== "none") {
-        metadata.channel = channel;
-      } else {
-        delete metadata.channel;
-      }
+      console.debug('[SituationsManagement] sending PUT /api/situations/${situation.id}/metadata', { metadata: newMetadata });
       const response = await fetch(`/api/situations/${situation.id}/metadata`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
           "X-API-Key": "changeme-key"
         },
-        body: JSON.stringify({ metadata })
+        body: JSON.stringify({ metadata: newMetadata })
       });
+
+      console.debug('[SituationsManagement] PUT response status', response.status);
       if (!response.ok) {
-        throw new Error(`Failed to update channel: ${response.status}`);
+        // If the server returned 404, maybe situation.id is a UI id (numeric) — try to map to backend GUID and retry
+        if (response.status === 404) {
+          console.warn('[SituationsManagement] PUT returned 404, attempting to map UI id to backend GUID and retry');
+          // Try to find backend situation by index if situations from context are available
+          const ctxSits = Array.isArray(situations) ? situations : [];
+          // If situation.id looks like a small number, interpret as UI id
+          const maybeIndex = Number(situation.id);
+          if (!isNaN(maybeIndex) && maybeIndex > 0 && maybeIndex <= ctxSits.length) {
+            const backend = ctxSits[maybeIndex - 1];
+            if (backend && backend.id) {
+              console.debug('[SituationsManagement] retrying PUT with backend id', backend.id);
+              const retry = await fetch(`/api/situations/${backend.id}/metadata`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json", "X-API-Key": "changeme-key" },
+                body: JSON.stringify({ metadata: newMetadata })
+              });
+              console.debug('[SituationsManagement] retry PUT status', retry.status);
+              if (!retry.ok) throw new Error(`Retry failed: ${retry.status}`);
+            } else {
+              throw new Error(`Situation mapping for UI id ${situation.id} failed`);
+            }
+          } else {
+            throw new Error(`Failed to update channel: ${response.status}`);
+          }
+        } else {
+          throw new Error(`Failed to update channel: ${response.status}`);
+        }
       }
-      setSelectedChannel(channel);
-      setSelectedSituation(prev => prev ? { ...prev, metadata } : prev);
-      await refreshSituations();
+
+      // Update finished on server — refresh situations and channels so UI stays consistent
+      try {
+        if (typeof refreshSituations === 'function') {
+          await refreshSituations();
+          console.debug('[SituationsManagement] refreshSituations completed');
+        }
+      } catch (e) {
+        console.warn('refreshSituations failed', e);
+      }
+
+      try {
+        if (typeof refreshTacticalChannels === 'function') {
+          await refreshTacticalChannels();
+          console.debug('[SituationsManagement] refreshTacticalChannels completed');
+        }
+      } catch (e) {
+        console.warn('refreshTacticalChannels failed', e);
+      }
+
       emitAppEvent('situations:updated');
       emitAppEvent('channels:updated');
     } catch (error) {
       console.error('Error updating tactical channel:', error);
       alert(`Не удалось обновить тактический канал: ${error instanceof Error ? error.message : error}`);
+
+      // Revert optimistic changes
+      setSelectedChannel(previousMetadata?.channel || TACTICAL_CHANNELS[0].value);
+      setSelectedSituation(prev => prev ? { ...prev, metadata: previousMetadata } : prev);
+      setSituations(prev => Array.isArray(prev) ? prev.map(s => (String(s?.id) === String(situation.id) ? { ...s, metadata: previousMetadata } : s)) : prev);
     }
   };
 
@@ -741,8 +802,15 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
                   <Select
                     value={selectedChannel}
                     onValueChange={(value) => {
+                      console.debug('[SituationsManagement] tactical select changed', { value, selectedSituationId: selectedSituation?.id });
                       if (selectedSituation) {
-                        updateSituationChannel(selectedSituation, value);
+                        try {
+                          updateSituationChannel(selectedSituation, value);
+                        } catch (e) {
+                          console.error('[SituationsManagement] updateSituationChannel threw', e);
+                        }
+                      } else {
+                        console.warn('[SituationsManagement] tactical select changed but no selectedSituation is set');
                       }
                     }}
                   >

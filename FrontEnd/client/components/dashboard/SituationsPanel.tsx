@@ -70,6 +70,7 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
       location: situation.location ?? "",
       leadUnit: situation.leadUnit ?? "",
       channel: situation.channel ?? "",
+      notes: situation.notes ?? "",
       priority: situation.priority ?? "Moderate",
     });
   };
@@ -319,6 +320,17 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
                   <SelectItem value="Critical">Critical</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="notes">Комментарий</Label>
+              <textarea
+                id="notes"
+                value={String(editForm.notes || "")}
+                onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                className="w-full rounded-md border px-3 py-2 text-sm"
+                rows={4}
+                placeholder="Добавьте комментарий..."
+              />
             </div>
           </div>
           <DialogFooter>

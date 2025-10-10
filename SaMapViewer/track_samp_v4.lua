@@ -22,124 +22,132 @@ end
 encoding.default = 'CP1251'
 u8 = encoding.UTF8
 
--- ============================================================================
--- КОНФИГУРАЦИЯ
--- ============================================================================
-
-local CONFIG = {
-    API_URL = 'http://localhost:5000/api',
-    API_KEY = 'changeme-key',
-    UPDATE_INTERVAL = 5000,  -- Отправка координат каждые 5 секунд
-    AFK_CHECK_INTERVAL = 30000,  -- Проверка AFK каждые 30 секунд
-    AFK_THRESHOLD = 300,  -- 5 минут без движения = AFK
-    LOCATION_UPDATE_INTERVAL = 3000,  -- Обновление локации для Panic/Pursuit каждые 3 секунды
-    DEBUG_MODE = false,  -- Режим отладки (включить через /debug on)
-}
-
--- Уровни логирования
-local LOG_LEVELS = {
-    DEBUG = 1,   -- Детальная информация для отладки
-    INFO = 2,    -- Обычная информация
-    WARN = 3,    -- Предупреждения
-    ERROR = 4,   -- Ошибки
-}
-
-local currentLogLevel = LOG_LEVELS.INFO  -- По умолчанию показываем INFO и выше
-
--- ============================================================================
--- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
--- ============================================================================
-
-local state = {
-    playerNick = nil,
-    playerId = nil,
-    lastPosition = {x = 0, y = 0, z = 0},
-    lastActivity = os.clock(),
-    isAFK = false,
-    
-    -- Текущее состояние
-    currentUnit = nil,      -- {id, marking, playerNicks, status, isLeadUnit}
-    currentSituation = nil, -- {id, type, metadata}
-    
-    -- Отслеживание динамических ситуаций (Panic/Pursuit)
-    trackingTarget = nil,   -- {playerId, situationId} для Pursuit
-    isInPanic = false,      -- Флаг активной паники
-    
-    -- Кэш данных
-    allUnits = {},
-    allSituations = {},
-    tacticalChannels = {},
-}
-
--- ImGui состояние (только если загружен)
-local mainWindow = nil
-local inputBuffer = {}
-
-if imgui_loaded and ffi_loaded then
-    mainWindow = imgui.new.bool(false)
-    inputBuffer = {
-        unitMarking = imgui.new.char[64](),
-        situationType = imgui.new.char[64](),
-        targetId = imgui.new.int(0),
-    }
+-- Маленькие хелперы
+local function joinOrEmpty(tbl, sep)
+    if type(tbl) ~= 'table' then return '' end
+    if #tbl == 0 then return '' end
+    return table.concat(tbl, sep or ', ')
 end
 
-local timers = {
-    lastUpdate = 0,
-    lastAFKCheck = 0,
-    lastLocationUpdate = 0,  -- Таймер обновления локации для динамических ситуаций
-}
+-- Простая URL-энкодировка для безопасного использования в путях
+local function renderMainWindow()
+    -- Minimal safe renderer: depend on the binding to call imgui.Process
+    if not imgui_loaded or not ffi_loaded then return end
+    if not mainWindow or not mainWindow[0] then return end
 
--- ============================================================================
--- УТИЛИТЫ И ЛОГИРОВАНИЕ
--- ============================================================================
+    -- Set a sane default position/size on first use
+    imgui.SetNextWindowPos(imgui.ImVec2(50, 50), imgui.Cond.FirstUseEver)
+    imgui.SetNextWindowSize(imgui.ImVec2(600, 700), imgui.Cond.FirstUseEver)
 
--- Универсальная функция логирования
-local function writeLog(level, message, data)
-    if level < currentLogLevel then return end
-    
-    local levelNames = {"DEBUG", "INFO", "WARN", "ERROR"}
-    local levelColors = {
-        [LOG_LEVELS.DEBUG] = 0x808080,  -- Серый
-        [LOG_LEVELS.INFO] = 0x3498DB,   -- Синий
-        [LOG_LEVELS.WARN] = 0xFFAA00,   -- Оранжевый
-        [LOG_LEVELS.ERROR] = 0xFF0000,  -- Красный
-    }
-    
-    local levelName = levelNames[level] or "UNKNOWN"
-    local timestamp = os.date("%H:%M:%S")
-    local fullMessage = string.format("[%s] [%s] %s", timestamp, levelName, tostring(message))
-    
-    -- Вывод в консоль (moonloader.log)
-    print('[SAPD Tracker] ' .. fullMessage)
-    
-    -- Вывод в чат (если не DEBUG или если DEBUG_MODE включен)
-    if level >= LOG_LEVELS.INFO or CONFIG.DEBUG_MODE then
-        local chatColor = levelColors[level] or 0xFFFFFF
-        sampAddChatMessage('[SAPD Tracker] {FFFFFF}' .. transliterate(message), chatColor)
+    local opened = imgui.Begin('SAPD Tracker', mainWindow, imgui.WindowFlags.NoCollapse)
+    -- draw contents when opened; always call End to keep stack balanced
+    if opened then
+        imgui.TextColored(imgui.ImVec4(0.2, 0.8, 1.0, 1.0), 'Officer: ' .. (state.playerNick or 'Unknown'))
+        imgui.Separator()
+
+        -- Unit management
+        if imgui.CollapsingHeader('Unit Management', imgui.TreeNodeFlags.DefaultOpen) then
+            if state.currentUnit then
+                imgui.TextColored(imgui.ImVec4(0.2, 1.0, 0.2, 1.0), 'Current Unit: ' .. state.currentUnit.marking)
+                imgui.Text('Status: ' .. (state.currentUnit.status or 'Code 5'))
+                imgui.Text('Members: ' .. joinOrEmpty(state.currentUnit.playerNicks, ', '))
+
+                imgui.Spacing()
+                if imgui.Button('Leave Unit', imgui.ImVec2(200, 30)) then
+                    leaveUnit(state.currentUnit.id)
+                end
+
+                imgui.Spacing()
+                imgui.Text('Quick Status Change:')
+                if imgui.Button('Code 2', imgui.ImVec2(90, 25)) then cmd_code2() end
+                imgui.SameLine()
+                if imgui.Button('Code 3', imgui.ImVec2(90, 25)) then cmd_code3() end
+                imgui.SameLine()
+                if imgui.Button('Code 4', imgui.ImVec2(90, 25)) then cmd_code4() end
+
+                if imgui.Button('Code 6', imgui.ImVec2(90, 25)) then cmd_code6() end
+                imgui.SameLine()
+                if imgui.Button('Code 7', imgui.ImVec2(90, 25)) then cmd_code7() end
+            else
+                imgui.TextColored(imgui.ImVec4(1.0, 0.5, 0.0, 1.0), 'Not in a unit')
+                imgui.Spacing()
+
+                imgui.InputText('Unit Marking', inputBuffer.unitMarking, 64)
+                if imgui.Button('Create Unit', imgui.ImVec2(200, 30)) then
+                    local marking = ffi.string(inputBuffer.unitMarking)
+                    if marking ~= '' then
+                        createUnit(marking)
+                    else
+                        notifyError('Enter unit marking!')
+                    end
+                end
+            end
+        end
+
+        imgui.Spacing()
+        imgui.Separator()
+
+        -- Situations
+        if imgui.CollapsingHeader('Situations', imgui.TreeNodeFlags.DefaultOpen) then
+            imgui.InputText('Type (911/code6/traffic/backup)', inputBuffer.situationType, 64)
+            if imgui.Button('Create Situation', imgui.ImVec2(200, 30)) then
+                local sitType = ffi.string(inputBuffer.situationType)
+                if sitType ~= '' then
+                    cmd_sit(sitType)
+                else
+                    notifyError('Enter situation type!')
+                end
+            end
+
+            imgui.Spacing()
+            if imgui.Button('PANIC BUTTON', imgui.ImVec2(200, 40)) then
+                cmd_panic()
+            end
+
+            imgui.Spacing()
+            imgui.InputInt('Target ID', inputBuffer.targetId)
+            if imgui.Button('Start Pursuit', imgui.ImVec2(200, 30)) then
+                local targetId = inputBuffer.targetId[0]
+                if targetId > 0 then
+                    cmd_prst(tostring(targetId))
+                else
+                    notifyError('Enter valid player ID!')
+                end
+            end
+
+            imgui.Spacing()
+            if state.isInPanic or state.trackingTarget then
+                if imgui.Button('Clear Panic/Pursuit', imgui.ImVec2(200, 30)) then
+                    cmd_clear()
+                end
+            end
+        end
+
+        imgui.Spacing()
+        imgui.Separator()
+
+        -- Info
+        if imgui.CollapsingHeader('Info') then
+            imgui.Text('AFK Status: ' .. (state.isAFK and 'AFK' or 'Active'))
+            local x, y, z = getCharCoordinates(PLAYER_PED)
+            local location = getLocationName(x, y, z)
+            imgui.Text('Location: ' .. location)
+            imgui.Text('Coords: ' .. string.format('%.1f, %.1f, %.1f', x, y, z))
+        end
+
+        imgui.Spacing()
+        if imgui.Button('Close Menu', imgui.ImVec2(120, 28)) then
+            if mainWindow then mainWindow[0] = false end
+        end
     end
-    
-    -- Если есть дополнительные данные
-    if data and CONFIG.DEBUG_MODE then
-        print('[SAPD Tracker] [DATA] ' .. tostring(data))
-    end
+    imgui.End()
 end
-
--- Удобные функции для разных уровней
-function logDebug(message, data)
-    writeLog(LOG_LEVELS.DEBUG, message, data)
 end
-
-function log(message, data)
-    writeLog(LOG_LEVELS.INFO, message, data)
+if type(logWarn) ~= 'function' and type(writeLog) == 'function' then
+    function logWarn(message, data) writeLog(LOG_LEVELS.WARN, message, data) end
 end
-
-function logWarn(message, data)
-    writeLog(LOG_LEVELS.WARN, message, data)
-end
-
-function logError(message, data)
-    writeLog(LOG_LEVELS.ERROR, message, data)
+if type(logError) ~= 'function' and type(writeLog) == 'function' then
+    function logError(message, data) writeLog(LOG_LEVELS.ERROR, message, data) end
 end
 
 -- Транслитерация русского текста
@@ -215,7 +223,7 @@ function debugShowState()
     notify('Tracking Target: ' .. (state.trackingTarget and tostring(state.trackingTarget.playerId) or 'nil'))
     
     if state.currentUnit then
-        notify('Unit Members: ' .. table.concat(state.currentUnit.playerNicks, ', '))
+        notify('Unit Members: ' .. joinOrEmpty(state.currentUnit.playerNicks, ', '))
         notify('Unit Status: ' .. (state.currentUnit.status or 'nil'))
     end
     
@@ -246,23 +254,14 @@ end
 function debugTestAPI()
     notify('Testing API connection...')
     logDebug('Testing API: ' .. CONFIG.API_URL)
-    
-    lua_thread.create(function()
-        local response = requests.get(CONFIG.API_URL:gsub('/api', '') .. '/health', {
-            headers = {['X-API-Key'] = CONFIG.API_KEY}
-        })
-        
-        if response then
-            logDebug('API Response: ' .. tostring(response.status_code))
-            if response.status_code == 200 or response.status_code == 404 then
-                notifySuccess('API connection OK (status: ' .. response.status_code .. ')')
-            else
-                notifyError('API responded with status: ' .. response.status_code)
-            end
-        else
-            notifyError('API connection FAILED - no response')
-            logError('API Test Failed', 'No response from server')
+    apiRequest('GET', CONFIG.API_URL:gsub('/api', '') .. '/health', nil, function(err, res)
+        if err then
+            notifyError('API connection FAILED')
+            logError('API Test Failed', err)
+            return
         end
+        -- When health returns, it's likely a plain text or JSON status
+        notifySuccess('API connection OK')
     end)
 end
 
@@ -373,8 +372,14 @@ end
 -- API ЗАПРОСЫ
 -- ============================================================================
 
-function apiRequest(method, endpoint, data)
-    local url = CONFIG.API_URL .. endpoint
+function apiRequest(method, endpoint, data, callback)
+
+    local url
+    if type(endpoint) == 'string' and endpoint:match('^https?://') then
+        url = endpoint
+    else
+        url = CONFIG.API_URL .. endpoint
+    end
     local headers = {
         ['Content-Type'] = 'application/json',
         ['X-API-Key'] = CONFIG.API_KEY
@@ -388,7 +393,7 @@ function apiRequest(method, endpoint, data)
     lua_thread.create(function()
         local startTime = os.clock()
         local response
-        
+
         if method == 'GET' then
             response = requests.get(url, {headers = headers})
         elseif method == 'POST' then
@@ -404,28 +409,31 @@ function apiRequest(method, endpoint, data)
         elseif method == 'DELETE' then
             response = requests.delete(url, {headers = headers})
         end
-        
+
         local elapsed = (os.clock() - startTime) * 1000
-        
+
         if response then
             logDebug(string.format('API Response: %s %s - Status: %d (%.0fms)', 
                 method, endpoint, response.status_code, elapsed))
-            
+
             if response.status_code == 200 or response.status_code == 201 or response.status_code == 204 then
                 if response.text and response.text ~= '' and CONFIG.DEBUG_MODE then
                     logDebug('Response Body: ' .. response.text:sub(1, 200))
                 end
-                return true, response.text and json.decode(response.text) or nil
+                if type(callback) == 'function' then
+                    local ok, parsed = pcall(json.decode, response.text or '')
+                    callback(nil, parsed)
+                end
             else
                 logError(string.format('API Error: %s %s', endpoint, response.status_code))
                 if response.text and CONFIG.DEBUG_MODE then
                     logError('Error Body', response.text)
                 end
-                return false, nil
+                if type(callback) == 'function' then callback({status = response.status_code}, nil) end
             end
         else
             logError(string.format('API No Response: %s %s (%.0fms)', method, endpoint, elapsed))
-            return false, nil
+            if type(callback) == 'function' then callback({status = 0}, nil) end
         end
     end)
 end
@@ -463,10 +471,15 @@ end
 -- Отправка статуса AFK
 function sendAFKStatus(isAFK)
     if not state.playerNick then return end
-    
-    apiRequest('PUT', '/players/' .. state.playerNick .. '/afk', {
+    apiRequest('PUT', '/players/' .. urlEncode(state.playerNick) .. '/afk', {
         isAFK = isAFK
-    })
+    }, function(err, res)
+        if err then
+            logError('Failed to update AFK status', err)
+        else
+            logDebug('AFK status updated')
+        end
+    end)
 end
 
 -- ============================================================================
@@ -485,93 +498,88 @@ function createUnit(marking, playerIds)
     end
     
     local data = {
-        Marking = marking,
-        PlayerNicks = playerNicks,
-        IsLeadUnit = false
+        marking = marking,
+        playerNicks = playerNicks,
+        isLeadUnit = false
     }
-    
-    lua_thread.create(function()
-        local response = requests.post(CONFIG.API_URL .. '/units', {
-            headers = {
-                ['Content-Type'] = 'application/json',
-                ['X-API-Key'] = CONFIG.API_KEY
-            },
-            data = json.encode(data)
-        })
-        
-        if response and response.status_code == 200 then
-            local unitData = json.decode(response.text)
-            state.currentUnit = unitData
-            notifySuccess('Unit ' .. marking .. ' created! Status: Code 4')
-            
-            -- Уведомляем других игроков
-            for i = 2, #playerNicks do
-                -- TODO: Отправить уведомление через SignalR
-            end
-            
-            refreshUnits()
-        else
+
+    apiRequest('POST', '/units', data, function(err, resp)
+        if err or not resp then
             notifyError('Failed to create unit')
+            logError('createUnit failed', err)
+            return
         end
+        state.currentUnit = resp
+        notifySuccess('Unit ' .. marking .. ' created! Status: Code 4')
+        refreshUnits()
     end)
 end
 
 function updateUnitStatus(unitId, newStatus)
-    lua_thread.create(function()
-        local response = requests.put(CONFIG.API_URL .. '/units/' .. unitId .. '/status', {
-            headers = {
-                ['Content-Type'] = 'application/json',
-                ['X-API-Key'] = CONFIG.API_KEY
-            },
-            data = json.encode({status = newStatus})
-        })
-        
-        if response and response.status_code == 200 then
-            notifySuccess('Status changed to ' .. newStatus)
-            if state.currentUnit then
-                state.currentUnit.status = newStatus
-            end
-        else
+    apiRequest('PUT', '/units/' .. unitId .. '/status', { status = newStatus }, function(err, res)
+        if err then
             notifyError('Failed to change status')
+            logError('updateUnitStatus failed', err)
+            return
         end
+        notifySuccess('Status changed to ' .. newStatus)
+        if state.currentUnit then state.currentUnit.status = newStatus end
     end)
 end
 
 function deleteUnit(unitId)
-    lua_thread.create(function()
-        local response = requests.delete(CONFIG.API_URL .. '/units/' .. unitId, {
-            headers = {
-                ['X-API-Key'] = CONFIG.API_KEY
-            }
-        })
-        
-        if response and (response.status_code == 200 or response.status_code == 204) then
-            notifySuccess('Unit deleted')
-            state.currentUnit = nil
-        else
+    apiRequest('DELETE', '/units/' .. unitId, nil, function(err, res)
+        if err then
             notifyError('Failed to delete unit')
+            logError('deleteUnit failed', err)
+            return
         end
+        notifySuccess('Unit deleted')
+        state.currentUnit = nil
+    end)
+end
+
+-- Покинуть юнит (быстрая реализация)
+function leaveUnit(unitId)
+    if not unitId then
+        notifyError('No unit id provided')
+        return
+    end
+
+    if not state.playerNick then
+        notifyError('Player nick not set')
+        return
+    end
+
+    apiRequest('POST', '/units/' .. unitId .. '/players/remove', { playerNick = state.playerNick }, function(err, res)
+        if err then
+            notifyError('Failed to leave unit')
+            logError('leaveUnit failed', err)
+            return
+        end
+        notifySuccess('You left the unit')
+        -- Refresh units to update local state
+        refreshUnits()
     end)
 end
 
 function refreshUnits()
-    lua_thread.create(function()
-        local response = requests.get(CONFIG.API_URL .. '/units', {
-            headers = {['X-API-Key'] = CONFIG.API_KEY}
-        })
-        
-        if response and response.status_code == 200 then
-            state.allUnits = json.decode(response.text)
-            
-            -- Проверяем текущий юнит
-            for _, unit in ipairs(state.allUnits) do
-                for _, nick in ipairs(unit.playerNicks) do
-                    if nick == state.playerNick then
-                        state.currentUnit = unit
-                        break
-                    end
+    apiRequest('GET', '/units', nil, function(err, resp)
+        if err then
+            logError('refreshUnits failed', err)
+            return
+        end
+        state.allUnits = resp or {}
+        state.currentUnit = nil
+        for _, unit in ipairs(state.allUnits) do
+            local nicks = unit.playerNicks or unit.PlayerNicks or {}
+            for _, nick in ipairs(nicks) do
+                if nick == state.playerNick then
+                    state.currentUnit = unit
+                    break
                 end
             end
+            if state.currentUnit then break end
         end
     end)
 end
@@ -583,56 +591,32 @@ end
 -- Обновление локации для динамических ситуаций (Panic/Pursuit)
 function updateSituationLocation(situationId, x, y, z)
     local locationName = getLocationName(x, y, z)
-    
-    lua_thread.create(function()
-        local response = requests.put(CONFIG.API_URL .. '/situations/' .. situationId .. '/location', {
-            headers = {
-                ['Content-Type'] = 'application/json',
-                ['X-API-Key'] = CONFIG.API_KEY
-            },
-            data = json.encode({
-                location = locationName,
-                x = x,
-                y = y,
-                z = z
-            })
-        })
-        
-        if response and response.status_code == 200 then
-            log('Локация обновлена: ' .. locationName)
+    apiRequest('PUT', '/situations/' .. situationId .. '/location', {
+        location = locationName,
+        x = x,
+        y = y,
+        z = z
+    }, function(err, res)
+        if err then
+            logError('updateSituationLocation failed', err)
+            return
         end
+        log('Локация обновлена: ' .. locationName)
     end)
 end
 
 function createSituation(situationType, metadata)
-    local data = {
-        Type = situationType,
-        Metadata = metadata or {}
-    }
-    
-    lua_thread.create(function()
-        local response = requests.post(CONFIG.API_URL .. '/situations/create', {
-            headers = {
-                ['Content-Type'] = 'application/json',
-                ['X-API-Key'] = CONFIG.API_KEY
-            },
-            data = json.encode(data)
-        })
-        
-        if response and response.status_code == 200 then
-            local situationData = json.decode(response.text)
-            state.currentSituation = situationData
-            
-            -- Автоматически присоединяемся к ситуации с Code 3
-            if state.currentUnit then
-                joinSituation(situationData.id)
-            end
-            
-            notifySuccess('Situation "' .. situationType .. '" created!')
-            playSound('notification')
-        else
+    local data = { type = situationType, metadata = metadata or {} }
+    apiRequest('POST', '/situations/create', data, function(err, resp)
+        if err or not resp then
             notifyError('Failed to create situation')
+            logError('createSituation failed', err)
+            return
         end
+        state.currentSituation = resp
+        if state.currentUnit then joinSituation(resp.id) end
+        notifySuccess('Situation "' .. situationType .. '" created!')
+        playSound('notification')
     end)
 end
 
@@ -662,41 +646,18 @@ function createPursuit(targetPlayerId)
         z = tostring(z)
     }
     
-    lua_thread.create(function()
-        local response = requests.post(CONFIG.API_URL .. '/situations/create', {
-            headers = {
-                ['Content-Type'] = 'application/json',
-                ['X-API-Key'] = CONFIG.API_KEY
-            },
-            data = json.encode({
-                Type = 'Pursuit',
-                Metadata = metadata
-            })
-        })
-        
-        if response and response.status_code == 200 then
-            local situationData = json.decode(response.text)
-            state.currentSituation = situationData
-            
-            -- Устанавливаем отслеживание цели
-            state.trackingTarget = {
-                playerId = targetPlayerId,
-                situationId = situationData.id
-            }
-            
-            -- Автоматически присоединяемся к ситуации с Code 3
-            if state.currentUnit then
-                joinSituation(situationData.id)
-            end
-            
-            notifySuccess('Pursuit started for ' .. targetNick .. '!')
-            playSound('backup')
-            
-            -- Уведомление всем
-            notifyWarning('PURSUIT: ' .. targetNick .. ' in ' .. locationName .. '!')
-        else
+    apiRequest('POST', '/situations/create', { type = 'Pursuit', metadata = metadata }, function(err, resp)
+        if err or not resp then
             notifyError('Failed to create pursuit')
+            logError('createPursuit failed', err)
+            return
         end
+        state.currentSituation = resp
+        state.trackingTarget = { playerId = targetPlayerId, situationId = resp.id }
+        if state.currentUnit then joinSituation(resp.id) end
+        notifySuccess('Pursuit started for ' .. targetNick .. '!')
+        playSound('backup')
+        notifyWarning('PURSUIT: ' .. targetNick .. ' in ' .. locationName .. '!')
     end)
 end
 
@@ -715,38 +676,18 @@ function createPanic()
         z = tostring(z)
     }
     
-    lua_thread.create(function()
-        local response = requests.post(CONFIG.API_URL .. '/situations/create', {
-            headers = {
-                ['Content-Type'] = 'application/json',
-                ['X-API-Key'] = CONFIG.API_KEY
-            },
-            data = json.encode({
-                Type = 'Panic',
-                Metadata = metadata
-            })
-        })
-        
-        if response and response.status_code == 200 then
-            local situationData = json.decode(response.text)
-            state.currentSituation = situationData
-            
-            -- Устанавливаем флаг активной паники
-            state.isInPanic = true
-            
-            -- Автоматически присоединяемся к ситуации с Code 3
-            if state.currentUnit then
-                joinSituation(situationData.id)
-            end
-            
-            notifySuccess('Panic button activated!')
-            playSound('panic')
-            
-            -- Уведомление всем
-            notifyError('PANIC! Officer ' .. state.playerNick .. ' in danger at ' .. locationName .. '!')
-        else
+    apiRequest('POST', '/situations/create', { type = 'Panic', metadata = metadata }, function(err, resp)
+        if err or not resp then
             notifyError('Failed to activate panic')
+            logError('createPanic failed', err)
+            return
         end
+        state.currentSituation = resp
+        state.isInPanic = true
+        if state.currentUnit then joinSituation(resp.id) end
+        notifySuccess('Panic button activated!')
+        playSound('panic')
+        notifyError('PANIC! Officer ' .. state.playerNick .. ' in danger at ' .. locationName .. '!')
     end)
 end
 
@@ -755,26 +696,14 @@ function joinSituation(situationId)
         notifyError('You must be in a unit!')
         return
     end
-    
-    lua_thread.create(function()
-        local response = requests.post(CONFIG.API_URL .. '/situations/' .. situationId .. '/units/add', {
-            headers = {
-                ['Content-Type'] = 'application/json',
-                ['X-API-Key'] = CONFIG.API_KEY
-            },
-            data = json.encode({
-                unitId = state.currentUnit.id,
-                asLeadUnit = false
-            })
-        })
-        
-        if response and (response.status_code == 200 or response.status_code == 204) then
-            -- Автоматически меняем статус на Code 3
-            updateUnitStatus(state.currentUnit.id, 'Code 3')
-            notifySuccess('Joined situation')
-        else
+    apiRequest('POST', '/situations/' .. situationId .. '/units/add', { unitId = state.currentUnit.id, asLeadUnit = false }, function(err, res)
+        if err then
             notifyError('Failed to join situation')
+            logError('joinSituation failed', err)
+            return
         end
+        updateUnitStatus(state.currentUnit.id, 'Code 3')
+        notifySuccess('Joined situation')
     end)
 end
 
@@ -784,10 +713,42 @@ end
 
 local function renderMainWindow()
     if not imgui_loaded or not mainWindow then return end
-    
-    imgui.SetNextWindowSize(imgui.ImVec2(500, 600), imgui.Cond.FirstUseEver)
-    if imgui.Begin('SAPD Tracker', mainWindow, imgui.WindowFlags.NoCollapse) then
-        
+
+    -- If menu is open, force position/size every frame so it appears on-screen
+    if mainWindow[0] then
+        pcall(function()
+            imgui.SetNextWindowPos(imgui.ImVec2(50, 50), imgui.Cond.Always)
+            imgui.SetNextWindowSize(imgui.ImVec2(600, 700), imgui.Cond.Always)
+        end)
+    else
+        -- ensure first-use size preserved when closed
+        imgui.SetNextWindowSize(imgui.ImVec2(500, 600), imgui.Cond.FirstUseEver)
+    end
+
+    -- Call Begin in pcall to avoid crashing if ImGui has issues; capture returned 'opened' boolean
+    local ok, opened = pcall(imgui.Begin, 'SAPD Tracker', mainWindow, imgui.WindowFlags.NoCollapse)
+    if not ok then
+        logError('renderMainWindow: imgui.Begin call failed: ' .. tostring(opened))
+        return
+    end
+
+    -- One-time notify to confirm render is invoked and whether Begin allowed drawing
+    if not render_state.notified then
+        render_state.notified = true
+        logDebug('renderMainWindow: imgui.Begin returned: ' .. tostring(opened))
+        notify('renderMainWindow invoked (Begin returned: ' .. tostring(opened) .. ')')
+    end
+
+    -- If debug mode is on, also show a minimal debug window to verify ImGui output
+    if CONFIG.DEBUG_MODE then
+        local ok2, dbgOpened = pcall(imgui.Begin, 'SAPD Tracker Debug', imgui.new.bool(true), imgui.WindowFlags.AlwaysAutoResize + imgui.WindowFlags.NoCollapse)
+        if ok2 and dbgOpened then
+            imgui.Text('Debug window visible - ImGui rendering works')
+        end
+        if ok2 then imgui.End() end
+    end
+
+    if opened then
         -- Информация о текущем статусе
         imgui.TextColored(imgui.ImVec4(0.2, 0.8, 1.0, 1.0), 'Officer: ' .. (state.playerNick or 'Unknown'))
         imgui.Separator()
@@ -797,7 +758,7 @@ local function renderMainWindow()
             if state.currentUnit then
                 imgui.TextColored(imgui.ImVec4(0.2, 1.0, 0.2, 1.0), 'Current Unit: ' .. state.currentUnit.marking)
                 imgui.Text('Status: ' .. (state.currentUnit.status or 'Code 5'))
-                imgui.Text('Members: ' .. table.concat(state.currentUnit.playerNicks, ', '))
+                imgui.Text('Members: ' .. joinOrEmpty(state.currentUnit.playerNicks, ', '))
                 
                 imgui.Spacing()
                 if imgui.Button('Leave Unit', imgui.ImVec2(200, 30)) then
@@ -881,6 +842,12 @@ local function renderMainWindow()
             imgui.Text('Location: ' .. location)
             imgui.Text('Coords: ' .. string.format('%.1f, %.1f, %.1f', x, y, z))
         end
+
+        imgui.Spacing()
+        -- Close button at the bottom
+        if imgui.Button('Close Menu', imgui.ImVec2(120, 28)) then
+            if mainWindow then mainWindow[0] = false end
+        end
         
         imgui.End()
     end
@@ -891,9 +858,41 @@ end
 -- ============================================================================
 
 function cmd_unit(param)
-    if imgui_loaded and mainWindow then
-        -- Если ImGui загружен, открываем меню
+    if imgui_loaded then
+        -- Try to lazily initialize ImGui UI state if necessary
+        if not ffi_loaded then
+            notifyError('ImGui present but FFI not available. UI cannot be opened.')
+            logWarn('cmd_unit: ImGui present but ffi not loaded')
+            return
+        end
+
+        if not mainWindow then
+            -- Create UI state lazily (in case it wasn't possible during startup)
+            logDebug('cmd_unit: initializing ImGui UI state')
+            notify('Initializing UI state...')
+            mainWindow = imgui.new.bool(false)
+            inputBuffer = {
+                unitMarking = imgui.new.char[64](),
+                situationType = imgui.new.char[64](),
+                targetId = imgui.new.int(0),
+            }
+            -- Ensure render function is registered
+            imgui.Process = renderMainWindow
+            logDebug('cmd_unit: ImGui.Process set to renderMainWindow')
+            notify('UI initialized (menu is hidden by default). Use /unit to open it.')
+        else
+            logDebug('cmd_unit: ImGui UI state already initialized')
+        end
+
+        -- Toggle the UI window
         mainWindow[0] = not mainWindow[0]
+        if mainWindow[0] then
+            logDebug('cmd_unit: menu opened')
+            notify('SAPD Tracker menu opened')
+        else
+            logDebug('cmd_unit: menu closed')
+            notify('SAPD Tracker menu closed')
+        end
         return
     end
     
@@ -904,7 +903,7 @@ function cmd_unit(param)
         if state.currentUnit then
             notify('Current Unit: ' .. state.currentUnit.marking)
             notify('Status: ' .. (state.currentUnit.status or 'Code 5'))
-            notify('Members: ' .. table.concat(state.currentUnit.playerNicks, ', '))
+            notify('Members: ' .. joinOrEmpty(state.currentUnit.playerNicks, ', '))
             notify('Commands:')
             notify('  /unit leave - Leave unit')
             notify('  /code2-7 - Change status')
@@ -933,7 +932,7 @@ function cmd_unit(param)
         end
     elseif action == 'leave' then
         if state.currentUnit then
-            deleteUnit(state.currentUnit.id)
+            leaveUnit(state.currentUnit.id)
         else
             notifyError('You are not in a unit!')
         end
@@ -1040,25 +1039,22 @@ end
 
 -- Список активных ситуаций
 function cmd_situations()
-    lua_thread.create(function()
-        local response = requests.get(CONFIG.API_URL .. '/situations', {
-            headers = {['X-API-Key'] = CONFIG.API_KEY}
-        })
-        
-        if response and response.status_code == 200 then
-            local situations = json.decode(response.text)
-            if #situations == 0 then
-                notify('No active situations')
-                return
-            end
-            
-            notify('=== Active Situations ===')
-            for i, sit in ipairs(situations) do
-                local location = sit.metadata and sit.metadata.location or 'Unknown'
-                notify(string.format('%d. %s - %s', i, sit.type, location))
-            end
-        else
+    apiRequest('GET', '/situations/all', nil, function(err, situations)
+        if err or not situations then
             notifyError('Failed to load situations')
+            logError('cmd_situations failed', err)
+            return
+        end
+        if #situations == 0 then
+            notify('No active situations')
+            return
+        end
+        notify('=== Active Situations ===')
+        for i, sit in ipairs(situations) do
+            local metadata = sit.metadata or sit.Metadata or {}
+            local location = metadata.location or 'Unknown'
+            local t = sit.type or sit.Type or 'Unknown'
+            notify(string.format('%d. %s - %s', i, t, location))
         end
     end)
 end
@@ -1115,17 +1111,33 @@ function cmd_debug(param)
     end
 end
 
--- ============================================================================
+-- UI status diagnostic
+function cmd_ui_status()
+    notify('=== UI STATUS ===')
+    notify('ImGui loaded: ' .. tostring(imgui_loaded))
+    notify('FFI loaded: ' .. tostring(ffi_loaded))
+    if mainWindow[0] then
+        pcall(function()
+            imgui.SetNextWindowPos(imgui.ImVec2(50, 50), imgui.Cond.Always)
+            imgui.SetNextWindowSize(imgui.ImVec2(600, 700), imgui.Cond.Always)
+        end)
+        render_state.positioned = true
+    else
+        -- ensure first-use size preserved when closed
+        imgui.SetNextWindowSize(imgui.ImVec2(500, 600), imgui.Cond.FirstUseEver)
+    end
+end
 -- ГЛАВНЫЙ ЦИКЛ
 -- ============================================================================
 
 function main()
-    if not isSampLoaded() or not isSampfuncsLoaded() then return end
+    -- Ждём загрузки SA-MP и функций sampfuncs
+    while not isSampLoaded() or not isSampfuncsLoaded() do wait(100) end
     while not isSampAvailable() do wait(100) end
     
     -- Получаем ник игрока
     state.playerNick = sampGetPlayerNickname(select(2, sampGetPlayerIdByCharHandle(PLAYER_PED)))
-    log('Initializing for player: ' .. state.playerNick)
+    log('Initializing for player: ' .. tostring(state.playerNick))
     
     -- Регистрируем команды
     sampRegisterChatCommand('unit', cmd_unit)
@@ -1140,30 +1152,46 @@ function main()
     sampRegisterChatCommand('code6', cmd_code6)
     sampRegisterChatCommand('code7', cmd_code7)
     sampRegisterChatCommand('debug', cmd_debug)
+    sampRegisterChatCommand('ui_status', cmd_ui_status)
     
-    if imgui_loaded then
-        notify('Tracker started! Use /unit to open menu')
-        logDebug('ImGui loaded successfully')
-    else
-        notify('Tracker started! Use /unit create [marking] to create unit')
-        notifyWarning('ImGui not loaded - using text commands only')
-        logDebug('ImGui not available - text mode enabled')
-    end
+        if imgui_loaded then
+            -- If ImGui was loaded but FFI wasn't available at the top of the script
+            -- we can't create the cdata buffers. Inform the user and only enable
+            -- the interactive UI when FFI is available.
+            if not ffi_loaded then
+                notify('Tracker started! ImGui found but FFI is missing — UI disabled')
+                notifyWarning('ImGui present but FFI not loaded - install LuaJIT/ffi or mimgui with FFI support')
+                logWarn('ImGui present but ffi not loaded; interactive UI disabled')
+            else
+                notify('Tracker started! Use /unit to open menu')
+                logDebug('ImGui loaded successfully')
+                -- Ensure ImGui state is initialized (in case it wasn't earlier)
+                if not mainWindow then
+                    mainWindow = imgui.new.bool(false)
+                    inputBuffer = {
+                        unitMarking = imgui.new.char[64](),
+                        situationType = imgui.new.char[64](),
+                        targetId = imgui.new.int(0),
+                    }
+                end
+                -- Регистрируем функцию рендера один раз
+                imgui.Process = renderMainWindow
+            end
+        else
+            notify('Tracker started! Use /unit create [marking] to create unit')
+            notifyWarning('ImGui not loaded - using text commands only')
+            logDebug('ImGui not available - text mode enabled')
+        end
     
     log('Debug mode: Use /debug on to enable detailed logging')
     logDebug('Configuration loaded: API=' .. CONFIG.API_URL)
     
     -- Начальная загрузка данных
     refreshUnits()
-    
+
     -- Основной цикл
     while true do
         wait(0)
-        
-        -- Рендеринг ImGui (только если загружен)
-        if imgui_loaded then
-            imgui.Process = renderMainWindow
-        end
         
         local currentTime = os.clock() * 1000
         
@@ -1217,5 +1245,7 @@ function main()
             
             timers.lastLocationUpdate = currentTime
         end
+        
+        -- Rendering handled by mimgui binding via imgui.Process (renderMainWindow registered earlier)
     end
 end
