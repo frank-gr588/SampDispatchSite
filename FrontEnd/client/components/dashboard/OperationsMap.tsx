@@ -35,8 +35,6 @@ const HEAT_RING_STYLES: Record<string, string> = {
   Recon: "bg-indigo-400/28",
   Support: "bg-cyan-400/28",
 };
-
-// San Andreas map bounds
 // Try adjusting these if markers appear off the map
 // Common ranges: [-3000, 3000] or [-6000, 6000]
 const WORLD_MIN_X = -3000;
@@ -252,7 +250,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
                 // Fallback: render map with object-contain like before
                 return (
                   <img
-                    src={`${API_BASE}/sa_map.png`}
+                    src={`"/sa_map.png`}
                     alt="San Andreas map (fallback)"
                     style={{
                       position: "absolute",
@@ -280,7 +278,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
               return (
                 <>
                   <img
-                    src={`${API_BASE}/sa_map.png`}
+                    src={`/sa_map.png`}
                     alt="San Andreas map"
                     style={{
                       position: "absolute",
