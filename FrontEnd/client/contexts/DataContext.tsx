@@ -60,6 +60,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         const data = await response.json();
         console.log('[DataContext] Situations loaded:', data.length);
         setSituations(Array.isArray(data) ? data : []);
+        console.log('[DataContext] Situations loaded (debug suppressed)');
       } else {
         console.error('[DataContext] Situations fetch failed:', response.status);
       }

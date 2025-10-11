@@ -138,6 +138,19 @@ namespace SaMapViewer.Controllers
                 situation.Metadata[kvp.Key] = kvp.Value;
             }
 
+            // Log received metadata for debugging
+            _ = _history.AppendAsync(new { type = "received_metadata_update", id, incoming = dto.Metadata });
+
+            // Attempt parsing for debug logging
+            var parsedX = situation.Metadata.TryGetValue("x", out var sx) && float.TryParse(sx, out var fx) ? fx : (float?)null;
+            var parsedY = situation.Metadata.TryGetValue("y", out var sy) && float.TryParse(sy, out var fy) ? fy : (float?)null;
+            _ = _history.AppendAsync(new { type = "metadata_parsed_coords", id, parsedX, parsedY });
+
+            // If metadata contains numeric coords, update the numeric fields too
+            if (parsedX.HasValue) situation.X = parsedX.Value;
+            if (parsedY.HasValue) situation.Y = parsedY.Value;
+            if (situation.Metadata.TryGetValue("location", out var lname)) situation.LocationName = lname;
+
             // After updating metadata, check channel binding changes
             situation.Metadata.TryGetValue("channel", out var newChannelName);
             oldChannelName = string.IsNullOrWhiteSpace(oldChannelName) ? null : oldChannelName;
@@ -188,7 +201,6 @@ namespace SaMapViewer.Controllers
             public string Location { get; set; } = string.Empty;
             public float X { get; set; }
             public float Y { get; set; }
-            public float Z { get; set; }
         }
 
         [HttpPut("{id}/location")]
@@ -200,15 +212,23 @@ namespace SaMapViewer.Controllers
             if (situation == null)
                 return NotFound($"Situation with ID {id} not found");
 
-            // Обновляем локацию в метаданных
+            // Update both the human-friendly location name and numeric coord fields
+            situation.LocationName = dto.Location;
+            situation.X = dto.X;
+            situation.Y = dto.Y;
+
+            // Keep metadata compatible for clients that still expect strings
             situation.Metadata["location"] = dto.Location;
             situation.Metadata["x"] = dto.X.ToString();
             situation.Metadata["y"] = dto.Y.ToString();
-            situation.Metadata["z"] = dto.Z.ToString();
 
             _hub.Clients.All.SendAsync("SituationLocationUpdated", new { id, location = dto.Location, x = dto.X, y = dto.Y });
             _hub.Clients.All.SendAsync("SituationUpdated", situation);
             
+            // Log the location update for debugging
+            _ = _history.AppendAsync(new { type = "received_location_update", id, location = dto.Location, x = dto.X, y = dto.Y });
+            _ = _history.AppendAsync(new { type = "situation_after_location", id, situation });
+
             return Ok(situation);
         }
 

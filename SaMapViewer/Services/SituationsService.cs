@@ -28,6 +28,10 @@ namespace SaMapViewer.Services
                 Type = type ?? string.Empty,
                 Metadata = metadata ?? new Dictionary<string, string>()
             };
+            // If metadata contains coordinates or location name, set numeric fields for compatibility
+            if (sit.Metadata.TryGetValue("x", out var sx) && float.TryParse(sx, out var fx)) sit.X = fx;
+            if (sit.Metadata.TryGetValue("y", out var sy) && float.TryParse(sy, out var fy)) sit.Y = fy;
+            if (sit.Metadata.TryGetValue("location", out var lname)) sit.LocationName = lname;
             _situations[sit.Id] = sit;
             return sit;
         }

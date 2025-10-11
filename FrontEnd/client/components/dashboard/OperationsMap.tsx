@@ -51,32 +51,89 @@ const MAP_PADDING_BOTTOM = 0; // pixels or percentage of padding on bottom
 
 export function OperationsMap({ players, units, assignments, situations }: OperationsMapProps) {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const [dims, setDims] = React.useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [showDebugGrid, setShowDebugGrid] = React.useState(true);
   const [showCalibration, setShowCalibration] = React.useState(false);
 
-  // zoom & pan state
-  const [scale, setScale] = React.useState(1);
-  const [offset, setOffset] = React.useState({ x: 0, y: 0 });
-  const panRef = React.useRef<{ panning: boolean; startX: number; startY: number; startOffX: number; startOffY: number }>({ panning: false, startX: 0, startY: 0, startOffX: 0, startOffY: 0 });
+  // Small named-location lookup: map common location names to world coords.
+  // Extend this list as needed. Keys are lower-cased for case-insensitive lookup.
+  const NAMED_LOCATIONS: Record<string, { x: number; y: number }> = {
+    downtown: { x: -1500, y: 1200 },
+    docks: { x: 2000, y: -800 },
+    airport: { x: 500, y: 1800 },
+  };
 
-  React.useEffect(() => {
-    if (!containerRef.current) return;
-    const el = containerRef.current;
-    const obs = new ResizeObserver((entries) => {
-      for (const e of entries) {
-        const cr = e.contentRect;
-        setDims({ w: cr.width, h: cr.height });
+  // View transform state (zoom/pan) and panning ref
+  const [scale, setScale] = React.useState<number>(1);
+  const [offset, setOffset] = React.useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const panRef = React.useRef<{ panning: boolean; startX: number; startY: number; startOffX: number; startOffY: number }>({
+    panning: false,
+    startX: 0,
+    startY: 0,
+    startOffX: 0,
+    startOffY: 0,
+  });
+
+  /**
+   * Try to decode a location field that may be:
+   * - a pair of coordinates in a string like "123 -456"
+   * - a named location (e.g. "Downtown")
+   * - an object {x,y} or array [x,y]
+   * Returns {x, y} numbers or null when cannot decode.
+   */
+  function decodeLocation(value: any): { x: number; y: number } | null {
+    if (value == null) return null;
+    // If already numeric pair
+    if (typeof value === 'object' && value !== null && value.x !== undefined && value.y !== undefined) {
+      const nx = Number(value.x);
+      const ny = Number(value.y);
+      if (!Number.isFinite(nx) || !Number.isFinite(ny)) return null;
+      return { x: nx, y: ny };
+    }
+    // If array [x,y]
+    if (Array.isArray(value) && value.length >= 2) {
+      const nx = Number(value[0]);
+      const ny = Number(value[1]);
+      if (!Number.isFinite(nx) || !Number.isFinite(ny)) return null;
+      return { x: nx, y: ny };
+    }
+    // If string like "123 -456" or "123,-456"
+    if (typeof value === 'string') {
+        const s = value.trim();
+        // 1) Bracketed array like "[123, -456]" (or with semicolon/comma/space)
+        const mBracket = s.match(/\[\s*(-?\d+(?:\.\d+)?)\s*[,;\s]+\s*(-?\d+(?:\.\d+)?)\s*\]/);
+        if (mBracket) {
+          const nx = Number(mBracket[1]);
+          const ny = Number(mBracket[2]);
+          if (Number.isFinite(nx) && Number.isFinite(ny)) return { x: nx, y: ny };
+        }
+        // 2) Exact pair like "123 -456" or "123,-456"
+        const m = s.match(/^(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)$/m);
+        if (m) {
+          const nx = Number(m[1]);
+          const ny = Number(m[2]);
+          if (Number.isFinite(nx) && Number.isFinite(ny)) return { x: nx, y: ny };
+        }
+        // 3) Free-form text: extract first two numbers found anywhere (useful for logs/blocks)
+        const allNums = s.match(/-?\d+(?:\.\d+)?/g);
+        if (allNums && allNums.length >= 2) {
+          const nx = Number(allNums[0]);
+          const ny = Number(allNums[1]);
+          if (Number.isFinite(nx) && Number.isFinite(ny)) return { x: nx, y: ny };
+        }
+            // 4) Named lookup (case-insensitive)
+            const key = s.toLowerCase();
+            if (NAMED_LOCATIONS[key]) return NAMED_LOCATIONS[key];
+        }
+
+        return null;
       }
-    });
-    obs.observe(el);
-    setDims({ w: el.clientWidth, h: el.clientHeight });
-    return () => obs.disconnect();
-  }, []);
-
   const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
 
   const onWheel: React.WheelEventHandler<HTMLDivElement> = (e) => {
+    // This handler is used when attached as a React synthetic event (fallback).
+    // Prefer the native listener with { passive: false } to avoid browser warnings.
     e.preventDefault();
     const delta = e.deltaY > 0 ? -0.1 : 0.1;
     const next = clamp(scale + delta, 0.5, 10);
@@ -136,15 +193,43 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
       const sx = offX + MAP_PADDING_LEFT + u * usableW;
       const sy = offY + MAP_PADDING_TOP + vImg * usableH;
       
-      // Debug logging (remove in production)
-      if (Math.random() < 0.01) { // Log 1% of calls to avoid spam
-        console.log(`[Map] World: (${wx.toFixed(1)}, ${wy.toFixed(1)}) → Normalized: (${u.toFixed(3)}, ${v.toFixed(3)}) → Screen: (${sx.toFixed(0)}, ${sy.toFixed(0)})`);
-      }
+      // keep this function quiet in normal use; detailed logs for situations are emitted elsewhere
       
       return { x: sx, y: sy, ready: true };
     },
     [dims]
   );
+
+  // Resize observer to measure available drawing area
+  React.useEffect(() => {
+    const el = viewportRef.current || containerRef.current;
+    if (!el) return;
+
+    const ro = new ResizeObserver(() => {
+      const rect = el.getBoundingClientRect();
+      setDims({ w: Math.max(0, rect.width), h: Math.max(0, rect.height) });
+    });
+    ro.observe(el);
+    // initialize
+    const rect = el.getBoundingClientRect();
+    setDims({ w: Math.max(0, rect.width), h: Math.max(0, rect.height) });
+
+    return () => ro.disconnect();
+  }, []);
+
+  // Native wheel listener to allow preventDefault (no passive warning)
+  React.useEffect(() => {
+    const el = viewportRef.current || containerRef.current;
+    if (!el) return;
+    const handler = (ev: WheelEvent) => {
+      ev.preventDefault();
+      const delta = ev.deltaY > 0 ? -0.1 : 0.1;
+      const next = clamp(scale + delta, 0.5, 10);
+      setScale(next);
+    };
+    el.addEventListener('wheel', handler as EventListener, { passive: false });
+    return () => el.removeEventListener('wheel', handler as EventListener);
+  }, [scale]);
 
   return (
     <div ref={containerRef} className="relative aspect-square flex flex-col overflow-hidden rounded-[32px] border border-border/40 bg-card/80 shadow-panel backdrop-blur">
@@ -219,7 +304,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
       </div>
       <div
         className="relative flex-1 overflow-hidden touch-none select-none"
-        onWheel={onWheel}
+        ref={viewportRef}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -245,35 +330,28 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
               const topLeft = mapToScreen(WORLD_MIN_X, WORLD_MAX_Y);
               const bottomRight = mapToScreen(WORLD_MAX_X, WORLD_MIN_Y);
               
-              if (!topLeft.ready || !bottomRight.ready) {
-                console.warn('⚠️ Map not ready, dims:', dims, 'topLeft:', topLeft, 'bottomRight:', bottomRight);
-                // Fallback: render map with object-contain like before
-                return (
-                  <img
-                    src={`"/sa_map.png`}
-                    alt="San Andreas map (fallback)"
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "contain",
-                      opacity: 0.8
-                    }}
-                    onLoad={() => console.log('✅ Map image loaded (fallback mode)')}
-                    onError={(e) => console.error('❌ Map image failed to load:', e)}
-                  />
-                );
-              }
+                      if (!topLeft.ready || !bottomRight.ready) {
+                        // Not ready yet; render fallback image silently
+                        return (
+                          <img
+                            src={`/sa_map.png`}
+                            alt="San Andreas map (fallback)"
+                            style={{
+                              position: "absolute",
+                              inset: 0,
+                              width: "100%",
+                              height: "100%",
+                              objectFit: "contain",
+                              opacity: 0.8
+                            }}
+                          />
+                        );
+                      }
               
               const mapWidth = bottomRight.x - topLeft.x;
               const mapHeight = bottomRight.y - topLeft.y;
               
-              console.log('📐 Map box:', { 
-                topLeft: `(${topLeft.x.toFixed(1)}, ${topLeft.y.toFixed(1)})`,
-                bottomRight: `(${bottomRight.x.toFixed(1)}, ${bottomRight.y.toFixed(1)})`,
-                size: `${mapWidth.toFixed(1)}x${mapHeight.toFixed(1)}`
-              });
+              // Map box calculated (silent) — detailed diagnostics are emitted per-situation only
               
               return (
                 <>
@@ -286,10 +364,9 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
                       top: `${topLeft.y}px`,
                       width: `${mapWidth}px`,
                       height: `${mapHeight}px`,
-                      opacity: 0.8
+                      opacity: 0.8,
+                      // image left without explicit zIndex to avoid stacking surprises
                     }}
-                    onLoad={() => console.log('✅ Map image loaded')}
-                    onError={(e) => console.error('❌ Map image failed to load:', e)}
                   />
                   <div
                     style={{
@@ -348,6 +425,11 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
                     const situation = situationId
                       ? situations?.find((item) => item.id === Number(situationId))
                       : undefined;
+
+                    // If this player is a member of any unit, skip individual rendering
+                    const nickLower = String(player.nickname ?? '').toLowerCase();
+                    const isInUnit = Array.isArray(units) && units.some(u => Array.isArray(u.playerNicks) && u.playerNicks.some((n: any) => String(n).toLowerCase() === nickLower));
+                    if (isInUnit) return null;
 
                     const hasWorld = (player as any).worldX !== undefined && (player as any).worldY !== undefined;
                     if (!hasWorld) return null; // Skip players without world coords
@@ -428,6 +510,181 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
                               )}
                             </div>
                           </div>
+                      </div>
+                    );
+                  })}
+                  
+                  {/* Unit markers - render triangle using main player's coords (first matching nick)
+                      Color rules:
+                        - Default: On Patrol (green)
+                        - Support: if unit.situationId is set (blue)
+                        - Code 7: if unit.status indicates Code 7 (yellow)
+                  */}
+                  {units.map((unit) => {
+                    // Find a player that belongs to this unit by nickname (case-insensitive)
+                    const primaryNick = Array.isArray(unit.playerNicks) && unit.playerNicks.length > 0 ? unit.playerNicks[0] : null;
+                    let primaryPlayer: PlayerRecord | undefined = undefined;
+
+                    if (primaryNick) {
+                      primaryPlayer = players.find(p => String(p.nickname).toLowerCase() === String(primaryNick).toLowerCase());
+                    }
+
+                    // If no exact match, try any nick from unit.playerNicks
+                    if (!primaryPlayer && Array.isArray(unit.playerNicks)) {
+                      for (const nick of unit.playerNicks) {
+                        const found = players.find(p => String(p.nickname).toLowerCase() === String(nick).toLowerCase());
+                        if (found) { primaryPlayer = found; break; }
+                      }
+                    }
+
+                    if (!primaryPlayer) return null;
+                    const wx = (primaryPlayer as any).worldX;
+                    const wy = (primaryPlayer as any).worldY;
+                    if (wx === undefined || wy === undefined) return null;
+                    const pos = mapToScreen(wx, wy);
+                    if (!pos.ready) return null;
+
+                    // Determine color key for unit marker
+                    let unitColorKey = 'On Patrol';
+                    if (unit.situationId) unitColorKey = 'Support';
+                    const statusStr = String(unit.status ?? '').toLowerCase();
+                    if (statusStr.includes('code 7') || statusStr.includes('code7') || /code\s*7/.test(statusStr)) unitColorKey = 'Code 7';
+
+                    const unitMarkerColor = STATUS_MARKER_COLORS[unitColorKey] ?? 'bg-emerald-400 text-emerald-950';
+
+                    // If unit is Code 0, visually emphasize with red + pulse
+                    const isCode0 = /code\s*0/i.test(String(unit.status ?? '')) || String(unit.status ?? '').toLowerCase().includes('code0');
+                    const finalUnitColor = isCode0 ? 'bg-red-600 text-white border-red-700' : unitMarkerColor;
+
+                    const keyId = `unit-${unit.id}`;
+
+                    return (
+                      <div key={keyId} className="absolute group" style={{ left: `${pos.x}px`, top: `${pos.y}px`, transform: `translate(-50%, -50%) scale(${1 / scale})`, transformOrigin: 'center center', zIndex: 115 }}>
+                        {/* Triangle via clip-path */}
+                        <div
+                          className={cn('w-3 h-3 rounded-none border-2', finalUnitColor, isCode0 ? 'animate-pulse' : '')}
+                          style={{ clipPath: 'polygon(0% 0%, 100% 0%, 50% 100%)' }}
+                        />
+
+                        {/* Tooltip */}
+                        <div className="pointer-events-none absolute left-1/2 top-full mt-2 -translate-x-1/2 w-40 origin-top scale-95 rounded-2xl border border-border/40 bg-background/85 p-2 text-left text-xs text-foreground opacity-0 shadow-lg transition duration-150 group-hover:scale-100 group-hover:opacity-100">
+                          <div className="font-semibold text-sm">{unit.marking}</div>
+                          <div className="text-[11px] text-muted-foreground">Code: {unit.status}</div>
+                          <div className="mt-1 text-[11px]">Players: {unit.playerCount}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+          {/* Situation markers - canonical rendering:
+            - Whitelist types to render (case-insensitive)
+            - Prefer numeric fields on the situation (x,y or X,Y)
+            - Fallback: decodeLocation(metadata.location || location || location string)
+            - Hide TAC if empty or 'none'
+          */}
+
+                  {situations?.map((sit) => {
+                    const raw: any = sit as any;
+                    // (debug logs removed)
+
+                    // bring common derived values into scope early so debug logging can reference them
+                    const meta = raw.metadata ?? {};
+                    const locCandidate = meta.location ?? raw.location ?? raw.locationName ?? meta.loc ?? raw.coords ?? undefined;
+
+                    // whitelist of situation types we want to show on map (case-insensitive)
+                    // Normalize by removing spaces/punctuation so variants like TRAFFICSTOP or "traffic stop" match
+                    const WHITELIST = ["pursuit", "code7", "trafficstop", "staged", "onpatrol", "unassigned", "recon", "support"];
+                    const typeRaw = (raw.type ?? raw.code ?? "").toString();
+                    const normalizeType = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+                    const typeNorm = normalizeType(typeRaw);
+                    const metaTitle = normalizeType((meta?.title ?? '').toString());
+                    const isCodeType = /^code\s*\d+/i.test(typeRaw) || /^code\s*\d+/i.test(metaTitle) || typeNorm.startsWith('code');
+                    if (!WHITELIST.includes(typeNorm) && !isCodeType) return null;
+
+                    // 1) Prefer explicit numeric coordinates on the object (try multiple keys)
+                    const candX = raw.x ?? raw.X ?? raw.worldX ?? raw.XCoord ?? undefined;
+                    const candY = raw.y ?? raw.Y ?? raw.worldY ?? raw.YCoord ?? undefined;
+                    let coords: { x: number; y: number } | null = null;
+                    if (typeof candX === 'number' && typeof candY === 'number' && Number.isFinite(candX) && Number.isFinite(candY)) {
+                      coords = { x: candX, y: candY };
+                    }
+
+                    // 2) If not, try to decode from metadata/location fields
+                    if (!coords) {
+                      // If metadata has numeric x/y as strings, use them first
+                      if (meta.x !== undefined || meta.y !== undefined) {
+                        const mx = meta.x !== undefined ? Number(meta.x) : undefined;
+                        const my = meta.y !== undefined ? Number(meta.y) : undefined;
+                        if (typeof mx === 'number' && typeof my === 'number' && Number.isFinite(mx) && Number.isFinite(my)) {
+                          coords = { x: mx, y: my };
+                        }
+                      }
+
+                      if (!coords) {
+                        coords = decodeLocation(locCandidate ?? `${raw.x ?? ''} ${raw.y ?? ''}`);
+                      }
+                    }
+
+                    if (!coords) return null;
+
+                    // Clamp world coords into configured WORLD bounds so markers don't render far off-image
+                    const rawWx = Number(coords.x);
+                    const rawWy = Number(coords.y);
+                    const clampedWx = clamp(rawWx, WORLD_MIN_X, WORLD_MAX_X);
+                    const clampedWy = clamp(rawWy, WORLD_MIN_Y, WORLD_MAX_Y);
+                    // clamp performed silently
+                    const pos = mapToScreen(clampedWx, clampedWy);
+                    if (!pos.ready) return null;
+
+                    // normalize tac/channel and hide if empty or 'none'
+                    let tacRaw = raw.tac ?? raw.tacChannel ?? raw.channel ?? (meta && meta.channel) ?? null;
+                    if (typeof tacRaw === 'string') tacRaw = tacRaw.trim();
+                    const tac = tacRaw && tacRaw.toString().toLowerCase() !== 'none' ? tacRaw : null;
+
+                    // debug removed
+
+                    // choose label and visual style based on normalized type
+                    const displayLabel = raw.code ?? raw.type ?? raw.title ?? 'Situation';
+                    const colorKey = (() => {
+                      // try to map common type strings to legend keys (case-insensitive)
+                      // Treat any codeN (code6, code 6, etc.) as Code 7 style
+                      if (/^code\s*\d+/i.test(typeRaw) || typeNorm.startsWith('code')) return 'Code 7';
+                      switch (typeNorm) {
+                        case 'pursuit': return 'Pursuit';
+                        case 'trafficstop':
+                        case 'traffic stop': return 'Traffic Stop';
+                        case 'code 7': return 'Code 7';
+                        case 'staged': return 'Staged';
+                        case 'on patrol': return 'On Patrol';
+                        case 'unassigned': return 'Unassigned';
+                        case 'recon': return 'Recon';
+                        case 'support': return 'Support';
+                        default: return 'Unassigned';
+                      }
+                    })();
+
+                    const markerColor = STATUS_MARKER_COLORS[colorKey] ?? 'bg-slate-400 text-white';
+                    const heatStyle = HEAT_RING_STYLES[colorKey] ?? 'bg-muted/20';
+
+                    const keyId = raw.id ?? `${coords.x}-${coords.y}-${displayLabel}`;
+
+                    // Render minimal dot marker with hover tooltip (short info + id)
+                    return (
+                      <div
+                        key={`sit-${keyId}`}
+                        className="absolute group"
+                        style={{ left: `${pos.x}px`, top: `${pos.y}px`, transform: `translate(-50%, -50%) scale(${1 / scale})`, transformOrigin: 'center center', zIndex: 110 }}
+                      >
+                        <span className={cn(
+                          "pointer-events-auto absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex h-2 w-2 items-center justify-center rounded-full border border-white/40 shadow",
+                          markerColor
+                        )} />
+
+                        {/* Tooltip on hover */}
+                        <div className="pointer-events-none absolute left-1/2 top-full mt-2 -translate-x-1/2 w-40 origin-top scale-95 rounded-2xl border border-border/40 bg-background/85 p-2 text-left text-xs text-foreground opacity-0 shadow-lg transition duration-150 group-hover:scale-100 group-hover:opacity-100">
+                          <div className="font-semibold text-sm">{displayLabel}</div>
+                          <div className="text-[11px] text-muted-foreground">ID: {String(raw.id)}</div>
+                          <div className="mt-1 font-mono text-[11px] text-yellow-400">({Number(coords.x).toFixed(0)}, {Number(coords.y).toFixed(0)})</div>
+                        </div>
                       </div>
                     );
                   })}
@@ -579,6 +836,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
                 </div>
               );
             })}
+            
           </div>
           )}
           </div>

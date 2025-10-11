@@ -23,6 +23,8 @@ export interface SituationRecord {
   title: string;
   status: string;
   location: string;
+  x?: number;
+  y?: number;
   leadUnit: string;
   greenUnitId?: string;  // Green Unit (Инициатор)
   redUnitId?: string;    // Red Unit (Командир)
@@ -68,6 +70,8 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
       code: situation.code ?? "",
       title: situation.title ?? "",
       location: situation.location ?? "",
+      x: situation.x ?? undefined,
+      y: situation.y ?? undefined,
       leadUnit: situation.leadUnit ?? "",
       channel: situation.channel ?? "",
       notes: situation.notes ?? "",
@@ -287,6 +291,24 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
                 value={editForm.location || ""}
                 onChange={(e) => setEditForm({ ...editForm, location: e.target.value })}
               />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <Label htmlFor="coord-x">X</Label>
+                <Input
+                  id="coord-x"
+                  value={editForm.x !== undefined ? String(editForm.x) : ""}
+                  onChange={(e) => setEditForm({ ...editForm, x: e.target.value === "" ? undefined : Number(e.target.value) })}
+                />
+              </div>
+              <div>
+                <Label htmlFor="coord-y">Y</Label>
+                <Input
+                  id="coord-y"
+                  value={editForm.y !== undefined ? String(editForm.y) : ""}
+                  onChange={(e) => setEditForm({ ...editForm, y: e.target.value === "" ? undefined : Number(e.target.value) })}
+                />
+              </div>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="leadUnit">Главный юнит</Label>

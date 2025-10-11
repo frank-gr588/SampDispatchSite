@@ -296,7 +296,7 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
 
   const saveSituationDetails = async () => {
     if (!selectedSituation) return;
-    
+
     try {
       const metadata = {
         ...(selectedSituation.metadata as Record<string, string>),
@@ -306,6 +306,34 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
         title: editTitle.trim(),
       };
 
+      // If the edited location contains two numbers, send a structured location update
+      const locStr = editLocation.trim();
+      const nums = locStr.match(/-?\d+(?:\.\d+)?/g);
+      if (nums && nums.length >= 2) {
+        const nx = Number(nums[0]);
+        const ny = Number(nums[1]);
+        if (Number.isFinite(nx) && Number.isFinite(ny)) {
+          // Use the /location endpoint so backend numeric X/Y fields are populated
+          const resp = await fetch(`/api/situations/${selectedSituation.id}/location`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "X-API-Key": "changeme-key"
+            },
+            body: JSON.stringify({ Location: locStr, X: nx, Y: ny })
+          });
+          if (!resp.ok) throw new Error(`Location update failed: ${resp.status}`);
+
+          // Refresh authoritative data
+          await refreshSituations();
+          setIsEditMode(false);
+          emitAppEvent('situations:updated');
+          alert("Детали ситуации успешно обновлены (location)");
+          return;
+        }
+      }
+
+      // Fallback to updating metadata only
       const response = await fetch(`/api/situations/${selectedSituation.id}/metadata`, {
         method: "PUT",
         headers: {
@@ -485,7 +513,7 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
                   <div className="grid grid-cols-4 items-center gap-4">
                     <Label htmlFor="type" className="text-right">Тип</Label>
                     <Select value={newSituation.type} onValueChange={(value) => setNewSituation({...newSituation, type: value})}>
-                      <SelectTrigger className="col-span-3">
+                      <SelectTrigger id="type" className="col-span-3">
                         <SelectValue placeholder="Выберите тип ситуации" />
                       </SelectTrigger>
                       <SelectContent>
@@ -500,7 +528,7 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
                   <div className="grid grid-cols-4 items-center gap-4">
                     <Label htmlFor="channel" className="text-right">Тактический канал</Label>
                     <Select value={newSituationChannel} onValueChange={setNewSituationChannel}>
-                      <SelectTrigger className="col-span-3">
+                      <SelectTrigger id="channel" className="col-span-3">
                         <SelectValue placeholder="Выберите канал" />
                       </SelectTrigger>
                       <SelectContent>

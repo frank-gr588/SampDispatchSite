@@ -136,7 +136,10 @@ const adaptSituationForUI = (situation: SituationDto, index: number, units: Unit
     code: (situation.type ?? "unknown").toUpperCase(),
     title,
     status: normalizedStatus,
-    location: metadata.location || "Неизвестно",
+  // Prefer explicit metadata fields; if backend sends numeric fields, read them via any-cast
+  location: metadata.location || ((situation as any).locationName ?? "Неизвестно"),
+  x: typeof (situation as any).x === 'number' ? (situation as any).x : (metadata.x ? Number(metadata.x) : undefined),
+  y: typeof (situation as any).y === 'number' ? (situation as any).y : (metadata.y ? Number(metadata.y) : undefined),
     leadUnit: leadUnit?.marking || "Не назначен",
     greenUnitId: greenUnit?.marking || undefined,
     redUnitId: redUnit?.marking || undefined,
@@ -458,6 +461,24 @@ export default function Index() {
           if (next) metadata.location = next;
           else delete metadata.location;
         }
+        // If coordinates provided in the updates, call the location endpoint
+        const wantsLocationUpdate = updates.x !== undefined || updates.y !== undefined;
+        if (wantsLocationUpdate) {
+          const body = {
+            Location: updates.location ?? metadata.location ?? "",
+            X: updates.x ?? (metadata.x ? Number(metadata.x) : 0),
+            Y: updates.y ?? (metadata.y ? Number(metadata.y) : 0),
+          };
+          const locResp = await fetch(`/api/situations/${backendSit.id}/location`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "X-API-Key": "changeme-key" },
+            body: JSON.stringify(body),
+          });
+          if (!locResp.ok) throw new Error(`Failed to update location: ${locResp.status}`);
+          // Make sure metadata we send afterwards contains the numeric coords (as strings)
+          metadata.x = String(body.X);
+          metadata.y = String(body.Y);
+        }
         if (updates.notes !== undefined) {
           const next = normalize(updates.notes as string | undefined);
           if (next) metadata.notes = next;
@@ -767,8 +788,9 @@ export default function Index() {
                   players={adaptedPlayers}
                   units={units}
                   assignments={assignments}
-                  situations={situations}
+                  situations={adaptedSituations}
                 />
+                {/* Debug UI removed */}
               </div>
               <div className="flex flex-col gap-6">
                 <SituationsPanel

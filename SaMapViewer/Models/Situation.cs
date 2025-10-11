@@ -8,6 +8,11 @@ namespace SaMapViewer.Models
         public Guid Id { get; set; } = Guid.NewGuid();
         public string Type { get; set; } = string.Empty; // Code7, Pursuit, TrafficStop, Code6, 911
         public Dictionary<string, string> Metadata { get; set; } = new();
+        // Human-friendly location name (keeps original Location field separate from numeric coords)
+        public string LocationName { get; set; } = string.Empty;
+    // Numeric world coordinates (nullable if unknown)
+    public float? X { get; set; }
+    public float? Y { get; set; }
         public HashSet<Guid> Units { get; set; } = new(); // ID юнитов на ситуации
         
         // Green Unit - юнит который инициировал ситуацию (первый)
