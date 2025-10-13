@@ -14,7 +14,7 @@ interface TacticalChannelsProps {
 }
 
 export function TacticalChannels({ className }: TacticalChannelsProps) {
-  const { tacticalChannels: channels, refreshTacticalChannels } = useData();
+  const { tacticalChannels: channels, refreshTacticalChannels, situations } = useData();
   const [isLoading, setIsLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
@@ -222,7 +222,25 @@ export function TacticalChannels({ className }: TacticalChannelsProps) {
                             <div className="flex items-center gap-2 mt-2">
                               <Activity className="w-4 h-4 text-amber-400" />
                               <span className="text-sm text-amber-400">
-                                Ситуация: {String(channel.situationId).substring(0, 8)}...
+                                Ситуация: {
+                                  (() => {
+                                    try {
+                                      // If backend provided a situationTitle, prefer it
+                                      const maybeTitle = (channel as any)?.situationTitle;
+                                      if (maybeTitle && String(maybeTitle).trim().length > 0) return String(maybeTitle);
+
+                                      // Fallback: try to resolve from local situations list
+                                      const sit = Array.isArray(situations) ? situations.find(s => String(s.id) === String(channel.situationId)) : undefined;
+                                      if (sit) {
+                                        const meta = sit.metadata as any;
+                                        return meta?.title || sit.type || `${String(channel.situationId).substring(0,8)}...`;
+                                      }
+                                      return `${String(channel.situationId).substring(0,8)}...`;
+                                    } catch (e) {
+                                      return `${String(channel.situationId).substring(0,8)}...`;
+                                    }
+                                  })()
+                                }
                               </span>
                             </div>
                           )}

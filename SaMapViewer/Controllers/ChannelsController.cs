@@ -12,14 +12,16 @@ namespace SaMapViewer.Controllers
     [Route("api/[controller]")]
     public class ChannelsController : ControllerBase
     {
-        private readonly TacticalChannelsService _channels;
+    private readonly TacticalChannelsService _channels;
+    private readonly SituationsService _situations;
         private readonly IHubContext<CoordsHub> _hub;
         private readonly HistoryService _history;
         private readonly Microsoft.Extensions.Options.IOptions<SaMapViewer.Services.SaOptions> _options;
 
-        public ChannelsController(TacticalChannelsService channels, IHubContext<CoordsHub> hub, HistoryService history, Microsoft.Extensions.Options.IOptions<SaMapViewer.Services.SaOptions> options)
+        public ChannelsController(TacticalChannelsService channels, SituationsService situations, IHubContext<CoordsHub> hub, HistoryService history, Microsoft.Extensions.Options.IOptions<SaMapViewer.Services.SaOptions> options)
         {
             _channels = channels;
+            _situations = situations;
             _hub = hub;
             _history = history;
             _options = options;
@@ -40,17 +42,44 @@ namespace SaMapViewer.Controllers
         }
 
         [HttpGet("all")]
-        public ActionResult<List<TacticalChannel>> GetAll() => _channels.GetAll();
+        public ActionResult<List<object>> GetAll()
+        {
+            var list = _channels.GetAll();
+            var result = new List<object>();
+            foreach (var ch in list)
+            {
+                string? sitTitle = null;
+                if (ch.SituationId.HasValue)
+                {
+                    if (_situations.TryGet(ch.SituationId.Value, out var sit) && sit != null)
+                    {
+                        // Prefer metadata.title then type
+                        sitTitle = sit.Metadata != null && sit.Metadata.TryGetValue("title", out var t) && !string.IsNullOrWhiteSpace(t) ? t : sit.Type;
+                    }
+                }
+                result.Add(new {
+                    id = ch.Id,
+                    name = ch.Name,
+                    isBusy = ch.IsBusy,
+                    situationId = ch.SituationId,
+                    situationTitle = sitTitle,
+                    notes = (string?)null
+                });
+            }
+            return result;
+        }
 
         [HttpPost("{id}/busy")]
         public IActionResult SetBusy(Guid id, [FromBody] BusyDto dto)
         {
             if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
             _channels.SetBusy(id, dto?.IsBusy == true);
-            if (_channels.TryGet(id, out var ch))
+            if (_channels.TryGet(id, out var ch) && ch != null)
             {
                 _hub.Clients.All.SendAsync("ChannelUpdated", ch);
-                _ = _history.AppendAsync(new { type = "channel_busy", id = ch.Id, ch.IsBusy });
+                var busyVal = ch.IsBusy;
+                var chId = ch.Id;
+                _ = _history.AppendAsync(new { type = "channel_busy", id = chId, IsBusy = busyVal });
             }
             return Ok();
         }
@@ -60,10 +89,12 @@ namespace SaMapViewer.Controllers
         {
             if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
             _channels.AttachSituation(id, dto?.SituationId);
-            if (_channels.TryGet(id, out var ch))
+            if (_channels.TryGet(id, out var ch) && ch != null)
             {
                 _hub.Clients.All.SendAsync("ChannelUpdated", ch);
-                _ = _history.AppendAsync(new { type = "channel_attach_situation", id = ch.Id, ch.SituationId });
+                var sitIdVal = ch.SituationId;
+                var chId = ch.Id;
+                _ = _history.AppendAsync(new { type = "channel_attach_situation", id = chId, SituationId = sitIdVal });
             }
             return Ok();
         }

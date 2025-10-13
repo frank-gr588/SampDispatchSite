@@ -246,7 +246,7 @@ export function AssignmentBoard({
               </Badge>
             </div>
             <p className="text-xs text-muted-foreground">
-              Drag a unit token onto a situation to commit them. Drop back into the hold area to release.
+              Перетащите маркер юнита на карточку инцидента, чтобы назначить его. Перетащите обратно в область снятия, чтобы освободить.
             </p>
           </header>
           <div className="flex flex-wrap gap-3">
@@ -272,7 +272,7 @@ export function AssignmentBoard({
                           "inline-flex items-center gap-2 px-3 py-1 rounded-md border border-border/50 text-sm font-semibold uppercase tracking-[0.06em]",
                           statusClass(unit.status)
                         )}
-                        title={`Unit ${idx + 1}`}
+                          title={`Юнит ${idx + 1}`}
                       >
                         <span className="text-sm">{unit.marking ?? "—"}</span>
                         <span className="ml-2 text-xs bg-muted/10 px-2 py-0.5 rounded-sm">#{idx + 1}</span>
@@ -283,10 +283,10 @@ export function AssignmentBoard({
                     <span>{unit.playerCount ?? 0} чел.</span>
                   </div>
                   {isAssigned && (
-                    <span className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-[0.6rem] uppercase tracking-[0.24em] text-primary">
-                      Linked to situation
-                      <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                    </span>
+                      <span className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-[0.6rem] uppercase tracking-[0.24em] text-primary">
+                        Назначен на ситуацию
+                        <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                      </span>
                   )}
                 </button>
               );
@@ -377,26 +377,26 @@ export function AssignmentBoard({
                   <div className="mt-4 grid gap-4 text-xs text-muted-foreground sm:grid-cols-2">
                     <div>
                       <span className="block text-[0.58rem] uppercase tracking-[0.24em] text-muted-foreground/70">
-                        Location
+                        Местоположение
                       </span>
                       <span className="text-foreground/90">{situation.location}</span>
                     </div>
                     <div>
                       <span className="block text-[0.58rem] uppercase tracking-[0.24em] text-muted-foreground/70">
-                        Lead unit
+                        Ведущий юнит
                       </span>
                       <span className="text-foreground/90">{situation.leadUnit}</span>
                     </div>
                   </div>
                   <div className="mt-4 rounded-2xl border border-border/30 bg-background/50 p-4">
                     <p className="text-[0.58rem] uppercase tracking-[0.24em] text-muted-foreground">
-                      Assigned units
+                      Назначенные юниты
                     </p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {assigned.length === 0 && (
-                        <span className="rounded-full border border-dashed border-border/50 px-3 py-1 text-[0.65rem] text-muted-foreground">
-                          Drop units here
-                        </span>
+                          <span className="rounded-full border border-dashed border-border/50 px-3 py-1 text-[0.65rem] text-muted-foreground">
+                            Перетащите юниты сюда
+                          </span>
                       )}
                       {assigned.map((unit) => (
                         <div
@@ -408,7 +408,7 @@ export function AssignmentBoard({
                               "inline-flex items-center gap-2 px-2 py-1 rounded-sm text-sm font-semibold uppercase tracking-[0.06em]",
                               statusClass(unit.status)
                             )}
-                            title={`Unit ${units.findIndex(u => u.id === unit.id) + 1}`}
+                            title={`Юнит ${units.findIndex(u => u.id === unit.id) + 1}`}
                           >
                             <span>{unit.marking ?? "—"}</span>
                             <span className="ml-2 text-xs bg-muted/10 px-2 py-0.5 rounded-sm">#{units.findIndex(u => u.id === unit.id) + 1}</span>
@@ -418,7 +418,7 @@ export function AssignmentBoard({
                             onClick={() => assignUnit(unit.id, null)}
                             className="text-xs uppercase tracking-[0.24em] text-muted-foreground transition hover:text-primary"
                           >
-                            Release
+                            Снять
                           </button>
                         </div>
                       ))}

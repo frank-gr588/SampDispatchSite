@@ -187,12 +187,19 @@ export default function Index() {
     [players]
   );
 
-  // Адаптированные ситуации из backend + демо
+  // Адаптированные ситуации: разделяем на активные и закрытые
   const adaptedSituations = useMemo(() => {
-    const backendAdapted = backendSituations.map((s, i) => adaptSituationForUI(s, i, units));
-    // Объединяем с демо-ситуациями (если есть)
+    const activeBackend = backendSituations.filter(s => !!s.isActive);
+    const backendAdapted = activeBackend.map((s, i) => adaptSituationForUI(s, i, units));
+    // Объединяем с демо-ситуаиями (если есть) — демо считаем активными
     return [...backendAdapted, ...situations.map((s, i) => ({...s, id: backendAdapted.length + i + 1}))];
   }, [backendSituations, situations, units]);
+
+  // Отдельно: закрытые ситуации (для списка завершённых)
+  const closedSituations = useMemo(() => {
+    const closed = backendSituations.filter(s => !s.isActive);
+    return closed.map((s, i) => adaptSituationForUI(s, i, units));
+  }, [backendSituations, units]);
 
   // map backend GUID -> UI id (string)
   const guidToUi = useMemo(() => {
@@ -752,7 +759,13 @@ export default function Index() {
                   icon={<Radio className="h-5 w-5" />}
                   label={channel.name}
                   value={channel.isBusy ? "Занят" : "Свободен"}
-                  description={channel.situationId ? `Ситуация: ${String(channel.situationId).substring(0, 8)}...` : "Доступен для назначения"}
+                  description={
+                    (channel as any)?.situationTitle && String((channel as any).situationTitle).trim().length > 0
+                      ? `Ситуация: ${(channel as any).situationTitle}`
+                      : channel.situationId
+                        ? `Ситуация: ${String(channel.situationId).substring(0, 8)}...`
+                        : "Доступен для назначения"
+                  }
                   accent={channel.isBusy ? "from-red-400/25" : "from-green-400/25"}
                 />
               ))}

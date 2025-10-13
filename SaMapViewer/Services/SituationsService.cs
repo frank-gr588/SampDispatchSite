@@ -243,6 +243,23 @@ namespace SaMapViewer.Services
             if (!string.IsNullOrEmpty(tag)) RemoveTag(nick, tag);
         }
 
+        // New, non-obsolete methods for managing player tags on situations.
+        // These keep the same behavior as the old Join/Leave helpers but are intended
+        // to be used by controllers without triggering Obsolete warnings.
+        public void AddPlayerToSituation(Guid id, string nick)
+        {
+            if (!_situations.TryGetValue(id, out var s)) return;
+            var tag = GetTagForSituation(s);
+            if (!string.IsNullOrEmpty(tag)) AddTag(nick, tag);
+        }
+
+        public void RemovePlayerFromSituation(Guid id, string nick)
+        {
+            if (!_situations.TryGetValue(id, out var s)) return;
+            var tag = GetTagForSituation(s);
+            if (!string.IsNullOrEmpty(tag)) RemoveTag(nick, tag);
+        }
+
         private void AddTag(string nick, string tag)
         {
             var set = _nickToTags.GetOrAdd(nick, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));

@@ -93,6 +93,8 @@ const sanitizeSituation = (situation: SituationDto): SituationDto => ({
 export function SituationsManagement({ className }: SituationsManagementProps) {
   // Используем глобальное состояние из Context
   const { situations, setSituations, units, refreshSituations, refreshUnits, refreshTacticalChannels, isLoading: globalLoading } = useData();
+  const { tacticalChannels } = useData();
+  
   
   const [filteredSituations, setFilteredSituations] = useState<SituationDto[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
@@ -104,6 +106,7 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
   const [situationUnits, setSituationUnits] = useState<UnitDto[]>([]);
   const [showAddUnitDialog, setShowAddUnitDialog] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState<string>("none");
+  const [showCompletedDialog, setShowCompletedDialog] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
   const [editNotes, setEditNotes] = useState<string>("");
   const [editLocation, setEditLocation] = useState<string>("");
@@ -205,6 +208,15 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
 
   const updateSituationChannel = async (situation: SituationDto, channel: string) => {
     console.debug('[SituationsManagement] updateSituationChannel called', { situationId: situation?.id, channel });
+    // Validate against live tacticalChannels from context: prevent selecting a busy channel owned by another situation
+    if (Array.isArray(tacticalChannels) && tacticalChannels.length > 0 && channel && channel !== 'none') {
+      const match = tacticalChannels.find((c:any) => String(c.name) === String(channel) || String(c.id) === String(channel));
+      if (match && match.isBusy && match.situationId && String(match.situationId) !== String(situation.id)) {
+        alert(`Канал ${match.name} занят другой ситуацией.`);
+        return;
+      }
+    }
+
     // Optimistic UI update: immediately apply the channel locally so the UI feels instant.
     const previousMetadata = situation?.metadata ? { ...(situation.metadata as Record<string, string>) } : {};
     const newMetadata = { ...(previousMetadata as Record<string, string>) };
@@ -368,14 +380,47 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
       });
 
       if (response.ok) {
+        // Refresh authoritative data and clear selected UI state
         await refreshSituations();
         await refreshUnits();
+        if (typeof refreshTacticalChannels === 'function') await refreshTacticalChannels();
+        setSelectedChannel('none');
+        setSelectedSituation(null);
         emitAppEvent('situations:updated');
         emitAppEvent('units:updated');
         emitAppEvent('channels:updated');
       }
     } catch (error) {
       console.error("Error closing situation:", error);
+    }
+  };
+
+  const reopenSituation = async (situationId: string) => {
+    try {
+      const resp = await fetch(`/api/situations/${situationId}/open`, { method: 'POST', headers: { 'X-API-Key': 'changeme-key' } });
+      if (resp.ok) {
+        await refreshSituations();
+        if (typeof refreshTacticalChannels === 'function') await refreshTacticalChannels();
+        emitAppEvent('situations:updated');
+        emitAppEvent('channels:updated');
+      }
+    } catch (e) {
+      console.error('Failed to reopen situation', e);
+    }
+  };
+
+  const deleteSituation = async (situationId: string) => {
+    if (!confirm('Удалить ситуацию окончательно?')) return;
+    try {
+      const resp = await fetch(`/api/situations/${situationId}`, { method: 'DELETE' });
+      if (resp.ok || resp.status === 204) {
+        await refreshSituations();
+        if (typeof refreshTacticalChannels === 'function') await refreshTacticalChannels();
+        emitAppEvent('situations:updated');
+        emitAppEvent('channels:updated');
+      }
+    } catch (e) {
+      console.error('Failed to delete situation', e);
     }
   };
 
@@ -490,64 +535,80 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle>Управление ситуациями</CardTitle>
-              <CardDescription>
-                Активных: {getActiveSituationsCount()} | Всего: {Array.isArray(situations) ? situations.length : 0} | Юнитов задействовано: {getTotalUnitsOnSituations()}
-              </CardDescription>
+                          <CardTitle>Управление ситуациями</CardTitle>
+                          <CardDescription>
+                            Активных: {getActiveSituationsCount()} | Всего: {Array.isArray(situations) ? situations.length : 0} | Юнитов задействовано: {getTotalUnitsOnSituations()}
+                          </CardDescription>
             </div>
-            <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-              <DialogTrigger asChild>
-                <Button>
-                  <Plus className="w-4 h-4 mr-2" />
-                  Создать ситуацию
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Создать новую ситуацию</DialogTitle>
-                  <DialogDescription>
-                    Создание новой критической ситуации
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="grid gap-4 py-4">
-                  <div className="grid grid-cols-4 items-center gap-4">
-                    <Label htmlFor="type" className="text-right">Тип</Label>
-                    <Select value={newSituation.type} onValueChange={(value) => setNewSituation({...newSituation, type: value})}>
-                      <SelectTrigger id="type" className="col-span-3">
-                        <SelectValue placeholder="Выберите тип ситуации" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {SITUATION_TYPES.map((type) => (
-                          <SelectItem key={type.value} value={type.value}>
-                            {type.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="grid grid-cols-4 items-center gap-4">
-                    <Label htmlFor="channel" className="text-right">Тактический канал</Label>
-                    <Select value={newSituationChannel} onValueChange={setNewSituationChannel}>
-                      <SelectTrigger id="channel" className="col-span-3">
-                        <SelectValue placeholder="Выберите канал" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {TACTICAL_CHANNELS.map((channel) => (
-                          <SelectItem key={channel.value || "none"} value={channel.value}>
-                            {channel.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <DialogFooter>
-                  <Button onClick={createSituation} disabled={!newSituation.type}>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setShowCompletedDialog(true)}>
+                Просмотр завершённых
+              </Button>
+              <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+                  <DialogTrigger asChild>
+                  <Button>
+                    <Plus className="w-4 h-4 mr-2" />
                     Создать ситуацию
                   </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Создать новую ситуацию</DialogTitle>
+                    <DialogDescription>
+                      Создание новой ситуации
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="grid gap-4 py-4">
+                    <div className="grid grid-cols-4 items-center gap-4">
+                      <Label htmlFor="type" className="text-right">Тип</Label>
+                      <Select value={newSituation.type} onValueChange={(value) => setNewSituation({...newSituation, type: value})}>
+                          <SelectTrigger id="type" className="col-span-3">
+                          <SelectValue placeholder="Выберите тип ситуации" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {SITUATION_TYPES.map((type) => (
+                            <SelectItem key={type.value} value={type.value}>
+                              {type.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="grid grid-cols-4 items-center gap-4">
+                      <Label htmlFor="channel" className="text-right">Тактический канал</Label>
+                        <Select value={newSituationChannel} onValueChange={setNewSituationChannel}>
+                            <SelectTrigger id="channel" className="col-span-3">
+                            <SelectValue placeholder="Выберите канал" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {/* Prefer live tacticalChannels from DataContext; fall back to static list */}
+                            {(() => {
+                              if (Array.isArray(tacticalChannels) && tacticalChannels.length > 0) {
+                                const list = [ { id: 'none', name: 'Нет канала', isBusy: false, situationId: null }, ...tacticalChannels.map((c:any) => ({ id: String(c.id), name: c.name, isBusy: !!c.isBusy, situationId: c.situationId })) ];
+                                return list.map((channel) => (
+                                  <SelectItem key={channel.id || "none"} value={channel.name}>
+                                    {channel.name}{channel.isBusy ? ` — занято` : ''}
+                                  </SelectItem>
+                                ));
+                              }
+                              return TACTICAL_CHANNELS.map((channel) => (
+                                <SelectItem key={channel.value || "none"} value={channel.value}>
+                                  {channel.label}
+                                </SelectItem>
+                              ));
+                            })()}
+                          </SelectContent>
+                        </Select>
+                    </div>
+                  </div>
+                <DialogFooter>
+                  <Button onClick={createSituation} disabled={!newSituation.type}>
+                    Создать
+                  </Button>
                 </DialogFooter>
-              </DialogContent>
+                </DialogContent>
             </Dialog>
+              </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -708,6 +769,37 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
         </CardContent>
       </Card>
 
+      {/* Completed Situations Dialog */}
+      <Dialog open={showCompletedDialog} onOpenChange={setShowCompletedDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Завершённые ситуации</DialogTitle>
+            <DialogDescription>Список недавно закрытых или удалённых ситуаций</DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            {Array.isArray(situations) && situations.filter(s => !s?.isActive).length === 0 ? (
+              <p className="text-muted-foreground">Завершённых ситуаций не найдено</p>
+            ) : (
+              (situations || []).filter(s => !s?.isActive).map((s) => (
+                <div key={s.id} className="flex items-center justify-between py-2 border-b">
+                  <div>
+                    <div className="font-medium">{getSituationTypeInfo(s.type).label} — {String(s.id).substring(0,8)}</div>
+                    <div className="text-xs text-muted-foreground">Создана: {s.createdAt ? new Date(s.createdAt).toLocaleString('ru-RU') : '—'}</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={() => reopenSituation(s.id)}>Открыть</Button>
+                    <Button size="sm" variant="destructive" onClick={() => deleteSituation(s.id)}>Удалить</Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setShowCompletedDialog(false)}>Закрыть</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Диалог детали ситуации */}
       <Dialog open={!!selectedSituation} onOpenChange={() => setSelectedSituation(null)}>
         <DialogContent className="max-w-4xl">
@@ -827,18 +919,28 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
               <div className="flex items-center gap-4">
                 <div className="grid gap-1">
                   <Label className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Тактический канал</Label>
-                  <Select
+                    <Select
                     value={selectedChannel}
                     onValueChange={(value) => {
                       console.debug('[SituationsManagement] tactical select changed', { value, selectedSituationId: selectedSituation?.id });
-                      if (selectedSituation) {
-                        try {
-                          updateSituationChannel(selectedSituation, value);
-                        } catch (e) {
-                          console.error('[SituationsManagement] updateSituationChannel threw', e);
-                        }
-                      } else {
+                      if (!selectedSituation) {
                         console.warn('[SituationsManagement] tactical select changed but no selectedSituation is set');
+                        return;
+                      }
+
+                      // If tacticalChannels available, find matching channel by name and prevent selecting busy ones owned by other situations
+                      if (Array.isArray(tacticalChannels) && tacticalChannels.length > 0 && value && value !== 'none') {
+                        const found = tacticalChannels.find((c:any) => String(c.name) === String(value) || String(c.id) === String(value));
+                        if (found && found.isBusy && found.situationId && String(found.situationId) !== String(selectedSituation.id)) {
+                          alert(`Канал ${found.name} занят другой ситуацией.`);
+                          return;
+                        }
+                      }
+
+                      try {
+                        updateSituationChannel(selectedSituation, value);
+                      } catch (e) {
+                        console.error('[SituationsManagement] updateSituationChannel threw', e);
                       }
                     }}
                   >
@@ -846,11 +948,21 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
                       <SelectValue placeholder="Канал" />
                     </SelectTrigger>
                     <SelectContent>
-                      {TACTICAL_CHANNELS.map((channel) => (
-                        <SelectItem key={channel.value || "none"} value={channel.value}>
-                          {channel.label}
-                        </SelectItem>
-                      ))}
+                      {(() => {
+                        if (Array.isArray(tacticalChannels) && tacticalChannels.length > 0) {
+                          const list = [ { id: 'none', name: 'Нет канала', isBusy: false, situationId: null }, ...tacticalChannels.map((c:any) => ({ id: String(c.id), name: c.name, isBusy: !!c.isBusy, situationId: c.situationId })) ];
+                          return list.map((channel) => (
+                            <SelectItem key={channel.id || "none"} value={channel.name}>
+                              {channel.name}{channel.isBusy ? ` — занято` : ''}
+                            </SelectItem>
+                          ));
+                        }
+                        return TACTICAL_CHANNELS.map((channel) => (
+                          <SelectItem key={channel.value || "none"} value={channel.value}>
+                            {channel.label}
+                          </SelectItem>
+                        ));
+                      })()}
                     </SelectContent>
                   </Select>
                 </div>

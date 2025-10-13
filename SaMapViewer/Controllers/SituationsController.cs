@@ -74,9 +74,8 @@ namespace SaMapViewer.Controllers
         {
             if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
             if (string.IsNullOrWhiteSpace(dto?.Nick)) return BadRequest();
-            #pragma warning disable CS0612 // Suppress obsolete warning for Join (kept for compatibility)
-            _situations.Join(id, dto.Nick);
-            #pragma warning restore CS0612
+            // Use the non-obsolete API to add a player's tag/status for the situation
+            _situations.AddPlayerToSituation(id, dto.Nick);
             if (_situations.TryGet(id, out var s))
             {
                 _hub.Clients.All.SendAsync("SituationUpdated", s);
@@ -91,9 +90,8 @@ namespace SaMapViewer.Controllers
         {
             if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
             if (string.IsNullOrWhiteSpace(dto?.Nick)) return BadRequest();
-            #pragma warning disable CS0612 // Suppress obsolete warning for Leave (kept for compatibility)
-            _situations.Leave(id, dto.Nick);
-            #pragma warning restore CS0612
+            // Use the non-obsolete API to remove a player's tag/status for the situation
+            _situations.RemovePlayerFromSituation(id, dto.Nick);
             if (_situations.TryGet(id, out var s))
             {
                 _hub.Clients.All.SendAsync("SituationUpdated", s);
@@ -245,6 +243,22 @@ namespace SaMapViewer.Controllers
             var updatedSituation = _situations.GetSituation(id);
             if (updatedSituation != null)
             {
+                // Detach any tactical channels that were assigned to this situation so they become free
+                try
+                {
+                    var channels = _channels.GetAll();
+                    foreach (var ch in channels.Where(c => c.SituationId == id).ToList())
+                    {
+                        _channels.AttachSituation(ch.Id, null);
+                        _channels.SetBusy(ch.Id, false);
+                        _hub.Clients.All.SendAsync("ChannelUpdated", ch);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _ = _history.AppendAsync(new { type = "situation_channel_detach_error_on_close", situationId = id, error = ex.Message });
+                }
+
                 _hub.Clients.All.SendAsync("SituationUpdated", updatedSituation);
                 _ = _history.AppendAsync(new { type = "situation_close", id });
             }

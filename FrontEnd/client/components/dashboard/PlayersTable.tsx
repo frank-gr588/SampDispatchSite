@@ -226,7 +226,7 @@ export function PlayersTable({
         ))}
         {filteredPlayers.length === 0 && (
           <div className="rounded-2xl border border-dashed border-border/40 bg-background/60 px-6 py-12 text-center text-sm text-muted-foreground">
-            No units match the current filters.
+            Нет юнитов, соответствующих текущим фильтрам.
           </div>
         )}
       </div>
@@ -274,7 +274,7 @@ export function PlayersTable({
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="priority">Priority</Label>
+              <Label htmlFor="priority">Приоритет</Label>
               <Select
                 value={editForm.priority || "Routine"}
                 onValueChange={(value) => setEditForm({ ...editForm, priority: value as PlayerPriority })}
@@ -283,9 +283,9 @@ export function PlayersTable({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Routine">Routine</SelectItem>
-                  <SelectItem value="Elevated">Elevated</SelectItem>
-                  <SelectItem value="Critical">Critical</SelectItem>
+                  <SelectItem value="Routine">Рутинный</SelectItem>
+                  <SelectItem value="Elevated">Повышенный</SelectItem>
+                  <SelectItem value="Critical">Критический</SelectItem>
                 </SelectContent>
               </Select>
             </div>

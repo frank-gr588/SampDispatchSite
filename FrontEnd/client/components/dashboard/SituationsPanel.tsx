@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { useData } from "@/contexts/DataContext";
 import { Trash2, Edit, MessageSquare } from "lucide-react";
 
 export type SituationPriority = "Low" | "Moderate" | "High" | "Critical";
@@ -50,7 +51,19 @@ const PRIORITY_STYLES: Record<SituationPriority, string> = {
   Critical: "bg-rose-500/18 text-rose-200 border-rose-500/45",
 };
 
-export const SITUATION_STATUS_OPTIONS = Object.keys(STATUS_STYLES);
+export const SITUATION_STATUS_OPTIONS = [
+  { value: 'Active', label: 'Активна' },
+  { value: 'Stabilizing', label: 'Стабилизация' },
+  { value: 'Escalated', label: 'Эскалировано' },
+  { value: 'Monitoring', label: 'Мониторинг' },
+];
+
+const PRIORITY_LABELS: Record<string, string> = {
+  Low: 'Низкий',
+  Moderate: 'Средний',
+  High: 'Высокий',
+  Critical: 'Критический',
+};
 
 interface SituationsPanelProps {
   situations: SituationRecord[];
@@ -60,6 +73,7 @@ interface SituationsPanelProps {
 }
 
 export function SituationsPanel({ situations, onStatusChange, onDeleteSituation, onEditSituation }: SituationsPanelProps) {
+  const { tacticalChannels } = useData();
   const [editingSituation, setEditingSituation] = useState<SituationRecord | null>(null);
   const [editForm, setEditForm] = useState<Partial<SituationRecord>>({});
 
@@ -128,9 +142,9 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="bg-card/95 text-foreground">
-                    {SITUATION_STATUS_OPTIONS.map((status) => (
-                      <SelectItem key={status} value={status}>
-                        {status}
+                    {SITUATION_STATUS_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -157,13 +171,13 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
             <div className="grid gap-4 text-xs text-muted-foreground sm:grid-cols-2">
               <div>
                 <span className="block text-[0.58rem] uppercase tracking-[0.24em] text-muted-foreground/70">
-                  Location
+                  Местоположение
                 </span>
                 <span className="text-foreground/90">{situation?.location ?? "—"}</span>
               </div>
               <div>
                 <span className="block text-[0.58rem] uppercase tracking-[0.24em] text-muted-foreground/70">
-                  Channel
+                  Канал
                 </span>
                 <span className="text-foreground/90">{situation?.channel ?? "—"}</span>
               </div>
@@ -171,13 +185,13 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
             
             {/* Green Unit (Инициатор) и Red Unit (Командир) */}
             <div className="grid gap-3 text-xs mt-2">
-              {situation?.greenUnitId && (
+                  {situation?.greenUnitId && (
                 <div className="flex items-center gap-2">
                   <Badge
                     variant="outline"
                     className="shrink-0 border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-[0.18em] text-emerald-200"
                   >
-                    🟢 Green
+                    🟢 Инициатор
                   </Badge>
                   <span className="text-foreground/90">{situation.greenUnitId}</span>
                   <span className="text-muted-foreground/60 text-[0.65rem]">(Инициатор)</span>
@@ -189,7 +203,7 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
                     variant="outline"
                     className="shrink-0 border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-[0.18em] text-rose-200"
                   >
-                    🔴 Red
+                    🔴 Командир
                   </Badge>
                   <span className="text-foreground/90">{situation.redUnitId}</span>
                   <span className="text-muted-foreground/60 text-[0.65rem]">(Командир)</span>
@@ -201,7 +215,7 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
                     variant="outline"
                     className="shrink-0 border-border/40 bg-muted/20 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-[0.18em] text-muted-foreground"
                   >
-                    ⚪ Units
+                    ⚪ Юниты
                   </Badge>
                   <div className="flex flex-wrap gap-1.5">
                     {situation.units
@@ -219,7 +233,7 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
               )}
               <div className="flex items-center gap-2 mt-1">
                 <span className="text-[0.58rem] uppercase tracking-[0.24em] text-muted-foreground/70">
-                  Total units:
+                  Всего юнитов:
                 </span>
                 <span className="text-foreground/90 font-semibold">{situation?.unitsAssigned ?? 0}</span>
               </div>
@@ -235,7 +249,7 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
                 <p className="text-xs text-foreground/90 whitespace-pre-wrap">{situation.notes}</p>
               </div>
             )}
-            <div className="flex flex-wrap items-center justify-between gap-3 text-[0.65rem] text-muted-foreground">
+              <div className="flex flex-wrap items-center justify-between gap-3 text-[0.65rem] text-muted-foreground">
               <span className="font-mono uppercase tracking-[0.24em]">
                 {situation?.updated ?? "—"}
               </span>
@@ -246,14 +260,14 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
                 className="gap-2 text-muted-foreground/80 hover:text-rose-200"
               >
                 <Trash2 className="h-4 w-4" />
-                Delete
+                Удалить
               </Button>
             </div>
           </div>
         ))}
         {situations.length === 0 && (
           <div className="rounded-2xl border border-dashed border-border/40 bg-background/60 px-4 py-8 text-center text-sm text-muted-foreground">
-            No active situations. Stay ready.
+            Активных ситуаций нет. Будьте готовы.
           </div>
         )}
       </div>
@@ -261,10 +275,10 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
       {/* Edit Situation Dialog */}
       <Dialog open={!!editingSituation} onOpenChange={(open) => !open && setEditingSituation(null)}>
         <DialogContent className="sm:max-w-[525px]">
-          <DialogHeader>
+            <DialogHeader>
             <DialogTitle>Редактировать детали ситуации</DialogTitle>
             <DialogDescription>
-              Обновите информацию о ситуации. Нажмите сохранить, когда закончите.
+              Обновите информацию о ситуации. Нажмите «Сохранить», когда закончите.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -320,11 +334,40 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
             </div>
             <div className="grid gap-2">
               <Label htmlFor="channel">Канал</Label>
-              <Input
-                id="channel"
-                value={editForm.channel || ""}
-                onChange={(e) => setEditForm({ ...editForm, channel: e.target.value })}
-              />
+              <Select
+                value={editForm.channel || "none"}
+                onValueChange={(value) => {
+                  // If tacticalChannels available, prevent selecting a busy channel owned by another situation
+                  if (Array.isArray(tacticalChannels) && tacticalChannels.length > 0 && value && value !== 'none') {
+                    const found = tacticalChannels.find((c:any) => String(c.name) === String(value) || String(c.id) === String(value));
+                    if (found && found.isBusy && found.situationId && String(found.situationId) !== String(editingSituation?.id)) {
+                      alert(`Канал ${found.name} занят другой ситуацией.`);
+                      return;
+                    }
+                  }
+                  setEditForm({ ...editForm, channel: value });
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(() => {
+                    if (Array.isArray(tacticalChannels) && tacticalChannels.length > 0) {
+                      const list = [ { id: 'none', name: 'Нет канала', isBusy: false, situationId: null }, ...tacticalChannels.map((c:any) => ({ id: String(c.id), name: c.name, isBusy: !!c.isBusy, situationId: c.situationId })) ];
+                      return list.map((channel) => (
+                        <SelectItem key={channel.id || "none"} value={channel.name}>
+                          {channel.name}{channel.isBusy ? ` — занято` : ''}
+                        </SelectItem>
+                      ));
+                    }
+                    const FALLBACK = [ { value: 'none', label: 'Нет канала' }, { value: 'TAC-1', label: 'TAC-1' }, { value: 'TAC-2', label: 'TAC-2' }, { value: 'TAC-3', label: 'TAC-3' } ];
+                    return FALLBACK.map((ch) => (
+                      <SelectItem key={ch.value} value={ch.value}>{ch.label}</SelectItem>
+                    ));
+                  })()}
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="priority">Приоритет</Label>
@@ -336,10 +379,10 @@ export function SituationsPanel({ situations, onStatusChange, onDeleteSituation,
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Low">Low</SelectItem>
-                  <SelectItem value="Moderate">Moderate</SelectItem>
-                  <SelectItem value="High">High</SelectItem>
-                  <SelectItem value="Critical">Critical</SelectItem>
+                  <SelectItem value="Low">Низкий</SelectItem>
+                  <SelectItem value="Moderate">Средний</SelectItem>
+                  <SelectItem value="High">Высокий</SelectItem>
+                  <SelectItem value="Critical">Критический</SelectItem>
                 </SelectContent>
               </Select>
             </div>
