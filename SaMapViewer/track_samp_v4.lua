@@ -48,6 +48,7 @@ local state = state or {
     lastPosition = { x = 0, y = 0, z = 0 },
     lastActivity = os.clock(),
     allUnits = {},
+    joinedSituations = {},
 }
 
 -- Таймеры для периодических задач
@@ -55,6 +56,7 @@ local timers = timers or {
     lastUpdate = 0,
     lastAFKCheck = 0,
     lastLocationUpdate = 0,
+    lastSituationBroadcast = 0,
 }
 
 encoding.default = 'CP1251'
@@ -64,10 +66,12 @@ u8 = encoding.UTF8
 CONFIG = CONFIG or {
     API_URL = 'http://localhost:5000/api',
     API_KEY = 'changeme-key',
-    UPDATE_INTERVAL = 5000,
+    UPDATE_INTERVAL = 7000,
     AFK_CHECK_INTERVAL = 60000,
     AFK_THRESHOLD = 300,
-    LOCATION_UPDATE_INTERVAL = 5000,
+    LOCATION_UPDATE_INTERVAL = 7000,
+    -- Interval (ms) used to aggressively broadcast situation coordinates during Panic/Pursuit
+    SITUATION_BROADCAST_INTERVAL = 2000,
     DEBUG_MODE = false,
 }
 
@@ -102,6 +106,13 @@ json = json or { encode = function(v) return tostring(v) end, decode = function(
 
 -- Ensure lua_thread helper exists
 lua_thread = lua_thread or { create = function(f) pcall(f) end }
+
+-- Throttling controls to avoid too many concurrent HTTP requests which may cause lag
+local NETWORK = NETWORK or {
+    maxConcurrent = 6, -- max concurrent HTTP requests allowed
+    inFlight = 0,
+    perSituationInFlight = {}, -- map situationId -> boolean
+}
 
 -- Ensure sampAddChatMessage exists as fallback (avoid crashes when not running in SA-MP)
 sampAddChatMessage = sampAddChatMessage or function(text, color) print(text) end
@@ -782,61 +793,106 @@ function apiRequest(method, endpoint, data, callback)
         logDebug('Request Data: ' .. json.encode(data))
     end
     
-    lua_thread.create(function()
-        local startTime = os.clock()
-        local response
-
-        local ok, resp_or_err
-        if method == 'GET' then
-            ok, resp_or_err = pcall(requests.get, url, {headers = headers})
-        elseif method == 'POST' then
-            ok, resp_or_err = pcall(requests.post, url, {
-                headers = headers,
-                data = json.encode(data)
-            })
-        elseif method == 'PUT' then
-            ok, resp_or_err = pcall(requests.put, url, {
-                headers = headers,
-                data = json.encode(data)
-            })
-        elseif method == 'DELETE' then
-            ok, resp_or_err = pcall(requests.delete, url, {headers = headers})
+    -- Throttle: if too many concurrent requests, drop non-critical ones
+    local function shouldThrottle()
+        if NETWORK.inFlight >= NETWORK.maxConcurrent then
+            return true
         end
+        return false
+    end
 
-        if not ok then
-            -- resp_or_err contains the error message from requests
-            logError('HTTP request failed: ' .. tostring(resp_or_err))
-            if type(callback) == 'function' then callback({status = 0, error = tostring(resp_or_err)}, nil) end
+    -- Respect per-situation in-flight flag for PUT /situations/*/location
+    local isLocationPut = endpoint:match('/situations/.+/location$')
+    local sitId
+    if isLocationPut then
+        sitId = endpoint:match('/situations/(%w+)%/location')
+    end
+
+    -- If this is a location update and another for same situation is in-flight, skip
+    if isLocationPut and sitId and NETWORK.perSituationInFlight[sitId] then
+        logDebug('Skipping location update for situation ' .. tostring(sitId) .. ' (already in-flight)')
+        if type(callback) == 'function' then callback({status = 429, body = 'throttled'}, nil) end
+        return
+    end
+
+    if shouldThrottle() then
+        -- Allow critical endpoints (POST /situations/create, POST /units) to proceed
+        local allowCritical = endpoint:match('/situations/create') or endpoint:match('/units') or endpoint:match('/panic')
+        if not allowCritical then
+            logWarn('Dropping API request due to high concurrency: ' .. tostring(method) .. ' ' .. tostring(endpoint))
+            if type(callback) == 'function' then callback({status = 429, body = 'throttled'}, nil) end
             return
         end
+    end
 
-        local response = resp_or_err
+    -- Launch the real request in a thread and manage inFlight counters
+    lua_thread.create(function()
+        NETWORK.inFlight = (NETWORK.inFlight or 0) + 1
+        if sitId then NETWORK.perSituationInFlight[sitId] = true end
+        local startTime = os.clock()
+        local ok, resp_or_err
+            -- Prepare request body: if data is a string assume it's already JSON, otherwise encode
+            local body
+            if type(data) == 'string' then
+                body = data
+            else
+                -- protect against nil
+                if data == nil then
+                    body = nil
+                else
+                    body = json.encode(data)
+                end
+            end
+
+            if method == 'GET' then
+                ok, resp_or_err = pcall(requests.get, url, {headers = headers})
+            elseif method == 'POST' then
+                ok, resp_or_err = pcall(requests.post, url, {
+                    headers = headers,
+                    data = body
+                })
+            elseif method == 'PUT' then
+                ok, resp_or_err = pcall(requests.put, url, {
+                    headers = headers,
+                    data = body
+                })
+            elseif method == 'DELETE' then
+                ok, resp_or_err = pcall(requests.delete, url, {headers = headers})
+            end
 
         local elapsed = (os.clock() - startTime) * 1000
 
-        if response then
-            logDebug(string.format('API Response: %s %s - Status: %d (%.0fms)', 
-                method, endpoint, response.status_code, elapsed))
-
-            if response.status_code == 200 or response.status_code == 201 or response.status_code == 204 then
-                if response.text and response.text ~= '' and CONFIG.DEBUG_MODE then
-                    logDebug('Response Body: ' .. response.text:sub(1, 200))
-                end
-                if type(callback) == 'function' then
-                    local ok, parsed = pcall(json.decode, response.text or '')
-                    callback(nil, parsed)
+        if not ok then
+            logError('HTTP request failed: ' .. tostring(resp_or_err))
+            if type(callback) == 'function' then callback({status = 0, body = tostring(resp_or_err)}, nil) end
+        else
+            local response = resp_or_err
+            if response then
+                logDebug(string.format('API Response: %s %s - Status: %d (%.0fms)', method, endpoint, response.status_code, elapsed))
+                if response.status_code == 200 or response.status_code == 201 or response.status_code == 204 then
+                    if response.text and response.text ~= '' and CONFIG.DEBUG_MODE then
+                        logDebug('Response Body: ' .. response.text:sub(1, 200))
+                    end
+                    if type(callback) == 'function' then
+                        local ok2, parsed = pcall(json.decode, response.text or '')
+                        callback(nil, parsed)
+                    end
+                else
+                    local body = response.text or ''
+                    logError(string.format('API Error: %s %s - %s', method, endpoint, tostring(body):sub(1,200)))
+                    if CONFIG.DEBUG_MODE and body ~= '' then
+                        logError('Full Error Body: ' .. body)
+                    end
+                    if type(callback) == 'function' then callback({ status = response.status_code, body = body }, nil) end
                 end
             else
-                logError(string.format('API Error: %s %s', endpoint, response.status_code))
-                if response.text and CONFIG.DEBUG_MODE then
-                    logError('Error Body', response.text)
-                end
-                if type(callback) == 'function' then callback({status = response.status_code}, nil) end
+                logError(string.format('API No Response: %s %s (%.0fms)', method, endpoint, elapsed))
+                if type(callback) == 'function' then callback({status = 0, body = 'no response'}, nil) end
             end
-        else
-            logError(string.format('API No Response: %s %s (%.0fms)', method, endpoint, elapsed))
-            if type(callback) == 'function' then callback({status = 0}, nil) end
         end
+
+        NETWORK.inFlight = NETWORK.inFlight - 1
+        if sitId then NETWORK.perSituationInFlight[sitId] = nil end
     end)
 end
 
@@ -907,7 +963,12 @@ function createUnit(marking, playerIds)
 
     apiRequest('POST', '/units', data, function(err, resp)
         if err or not resp then
-            notifyError('Failed to create unit')
+            local code = err and err.status or 0
+            if code == 429 then
+                notifyWarning('Create unit request throttled - try again shortly')
+            else
+                notifyError('Failed to create unit')
+            end
             logError('createUnit failed', err)
             return
         end
@@ -993,14 +1054,23 @@ end
 -- Обновление локации для динамических ситуаций (Panic/Pursuit)
 function updateSituationLocation(situationId, x, y, z)
     local locationName = getLocationName(x, y, z)
-    apiRequest('PUT', '/situations/' .. situationId .. '/location', {
-        location = locationName,
-        x = x,
-        y = y,
-        z = z
-    }, function(err, res)
+    -- Format coords to two decimals and convert back to numbers to ensure JSON preserves fractional part
+    local fx = tonumber(string.format('%.2f', tonumber(x or 0)))
+    local fy = tonumber(string.format('%.2f', tonumber(y or 0)))
+    local fz = tonumber(string.format('%.2f', tonumber(z or 0)))
+
+    -- Build JSON body as string so numeric literals include the two-decimal formatting
+    local body = string.format('{"location":%s,"x":%.2f,"y":%.2f,"z":%.2f}', json.encode(locationName), fx or 0.0, fy or 0.0, fz or 0.0)
+
+    apiRequest('PUT', '/situations/' .. situationId .. '/location', body, function(err, res)
         if err then
-            logError('updateSituationLocation failed', err)
+            local code = err and err.status or 0
+            if code == 429 then
+                -- throttled due to concurrency; debug log only
+                logDebug('updateSituationLocation throttled for situation ' .. tostring(situationId))
+            else
+                logError('updateSituationLocation failed: ' .. tostring(err))
+            end
             return
         end
         log('Локация обновлена: ' .. locationName)
@@ -1008,15 +1078,41 @@ function updateSituationLocation(situationId, x, y, z)
 end
 
 function createSituation(situationType, metadata)
-    local data = { type = situationType, metadata = metadata or {} }
+    metadata = metadata or {}
+    -- Ensure numeric coordinates are present if available
+    if not metadata.x or not metadata.y then
+        local x, y, z = getCharCoordinates(PLAYER_PED)
+        -- Server expects metadata values as strings (Dictionary<string,string>)
+        metadata.x = tostring(string.format('%.2f', x))
+        metadata.y = tostring(string.format('%.2f', y))
+        metadata.z = tostring(string.format('%.2f', z))
+        metadata.location = metadata.location or getLocationName(x, y, z)
+    end
+    local data = { type = situationType, metadata = metadata }
     apiRequest('POST', '/situations/create', data, function(err, resp)
         if err or not resp then
-            notifyError('Failed to create situation')
+            local code = err and err.status or 0
+            if code == 429 then
+                notifyWarning('Create situation request throttled - try again shortly')
+            else
+                notifyError('Failed to create situation')
+            end
             logError('createSituation failed', err)
             return
         end
+        -- Normalize situation id (backend may use Id/ID)
+        local sitId = resp.id or resp.Id or resp.ID
+        if not sitId then
+            logError('createSituation: Missing situation id in response')
+            return
+        end
         state.currentSituation = resp
-        if state.currentUnit then joinSituation(resp.id) end
+        -- If we auto-join the situation (creator's unit), record it locally
+        if state.currentUnit then
+            joinSituation(sitId)
+            state.joinedSituations = state.joinedSituations or {}
+            state.joinedSituations[sitId] = resp
+        end
         notifySuccess('Situation "' .. situationType .. '" created!')
         playSound('notification')
     end)
@@ -1043,20 +1139,34 @@ function createPursuit(targetPlayerId)
         target = targetNick,
         location = locationName,
         priority = 'High',
-        x = tostring(x),
-        y = tostring(y),
-        z = tostring(z)
+        x = tostring(string.format('%.2f', x)),
+        y = tostring(string.format('%.2f', y)),
+        z = tostring(string.format('%.2f', z)),
     }
     
     apiRequest('POST', '/situations/create', { type = 'Pursuit', metadata = metadata }, function(err, resp)
         if err or not resp then
-            notifyError('Failed to create pursuit')
+            local code = err and err.status or 0
+            if code == 429 then
+                notifyWarning('Create pursuit request throttled - try again shortly')
+            else
+                notifyError('Failed to create pursuit')
+            end
             logError('createPursuit failed', err)
             return
         end
+        local sitId = resp.id or resp.Id or resp.ID
+        if not sitId then
+            logError('createPursuit: Missing situation id in response')
+            return
+        end
         state.currentSituation = resp
-        state.trackingTarget = { playerId = targetPlayerId, situationId = resp.id }
-        if state.currentUnit then joinSituation(resp.id) end
+        state.trackingTarget = { playerId = targetPlayerId, situationId = sitId }
+        if state.currentUnit then joinSituation(sitId) end
+        if state.currentUnit then
+            state.joinedSituations = state.joinedSituations or {}
+            state.joinedSituations[sitId] = resp
+        end
         notifySuccess('Pursuit started for ' .. targetNick .. '!')
         playSound('backup')
         notifyWarning('PURSUIT: ' .. targetNick .. ' in ' .. locationName .. '!')
@@ -1073,20 +1183,34 @@ function createPanic()
         location = locationName,
         priority = 'Critical',
         officer = state.playerNick,
-        x = tostring(x),
-        y = tostring(y),
-        z = tostring(z)
+        x = tostring(string.format('%.2f', x)),
+        y = tostring(string.format('%.2f', y)),
+        z = tostring(string.format('%.2f', z))
     }
     
     apiRequest('POST', '/situations/create', { type = 'Panic', metadata = metadata }, function(err, resp)
         if err or not resp then
-            notifyError('Failed to activate panic')
+            local code = err and err.status or 0
+            if code == 429 then
+                notifyWarning('Panic activation throttled - try again shortly')
+            else
+                notifyError('Failed to activate panic')
+            end
             logError('createPanic failed', err)
+            return
+        end
+        local sitId = resp.id or resp.Id or resp.ID
+        if not sitId then
+            logError('createPanic: Missing situation id in response')
             return
         end
         state.currentSituation = resp
         state.isInPanic = true
-        if state.currentUnit then joinSituation(resp.id, 'Code 0') end
+        if state.currentUnit then joinSituation(sitId, 'Code 0') end
+        if state.currentUnit then
+            state.joinedSituations = state.joinedSituations or {}
+            state.joinedSituations[sitId] = resp
+        end
         notifySuccess('Panic button activated!')
         playSound('panic')
         notifyError('PANIC! Officer ' .. state.playerNick .. ' in danger at ' .. locationName .. '!')
@@ -1100,13 +1224,22 @@ function joinSituation(situationId, desiredStatus)
     end
     apiRequest('POST', '/situations/' .. situationId .. '/units/add', { unitId = state.currentUnit.id, asLeadUnit = false }, function(err, res)
         if err then
-            notifyError('Failed to join situation')
+            local code = err and err.status or 0
+            if code == 429 then
+                notifyWarning('Join situation request throttled - try again shortly')
+            else
+                notifyError('Failed to join situation')
+            end
             logError('joinSituation failed', err)
             return
         end
         -- If a desiredStatus is provided (e.g., 'Code 0' for panic), set it; otherwise default to Code 3
         updateUnitStatus(state.currentUnit.id, desiredStatus or 'Code 3')
         notifySuccess('Joined situation')
+        -- Mark locally so we can show a map marker or track it
+        state.joinedSituations = state.joinedSituations or {}
+        state.joinedSituations[situationId] = { id = situationId, joinedAt = os.time() }
+        notify('Local marker placed for situation ID: ' .. tostring(situationId))
     end)
 end
 
@@ -1485,6 +1618,25 @@ function cmd_ui_status()
         imgui.SetNextWindowSize(imgui.ImVec2(500, 600), imgui.Cond.FirstUseEver)
     end
 end
+
+-- Join a situation by id from chat: /joinsit [id]
+function cmd_joinsit(param)
+    if not param or param == '' then
+        notify('Usage: /joinsit [situation id]')
+        return
+    end
+    local sitId = tonumber(param)
+    if not sitId then
+        notifyError('Invalid situation id')
+        return
+    end
+    -- Ensure player is in a unit
+    if not state.currentUnit then
+        notifyError('You must be in a unit to join a situation')
+        return
+    end
+    joinSituation(sitId)
+end
 -- ГЛАВНЫЙ ЦИКЛ
 -- ============================================================================
 
@@ -1511,6 +1663,7 @@ function main()
     sampRegisterChatCommand('code7', cmd_code7)
     sampRegisterChatCommand('debug', cmd_debug)
     sampRegisterChatCommand('ui_status', cmd_ui_status)
+    sampRegisterChatCommand('joinsit', cmd_joinsit)
     
     -- Проверяем статус ImGui
     if imgui_loaded and ffi_loaded then
@@ -1540,8 +1693,15 @@ function main()
 
     -- Основной цикл
     while true do
-        wait(0)
-        
+        -- Adaptive sleep: use a short sleep when active, slightly longer when idle to reduce CPU
+        local idleSleep = 0
+        if not state.isInPanic and not state.trackingTarget then
+            idleSleep = 20
+        else
+            idleSleep = 0
+        end
+        wait(idleSleep)
+
         local currentTime = os.clock() * 1000
         
         -- Отправка координат
@@ -1570,30 +1730,53 @@ function main()
         end
         
         -- Обновление локации для активной паники или погони
-        if currentTime - timers.lastLocationUpdate >= CONFIG.LOCATION_UPDATE_INTERVAL then
-            -- Обновляем локацию при активной панике
-            if state.isInPanic and state.currentSituation then
-                local x, y, z = getCharCoordinates(PLAYER_PED)
-                local location = getLocationName(x, y, z)
-                logDebug('Updating PANIC location: ' .. location)
-                updateSituationLocation(state.currentSituation.id, x, y, z)
-            end
-            
-            -- Обновляем локацию цели при погоне
-            if state.trackingTarget and sampIsPlayerConnected(state.trackingTarget.playerId) then
-                local targetHandle = select(2, sampGetCharHandleBySampPlayerId(state.trackingTarget.playerId))
-                if targetHandle then
-                    local x, y, z = getCharCoordinates(targetHandle)
+            -- Periodic (coarse) location update
+            if currentTime - timers.lastLocationUpdate >= CONFIG.LOCATION_UPDATE_INTERVAL then
+                -- Update panic location at coarse interval as a fallback
+                if state.isInPanic and state.currentSituation then
+                    local x, y, z = getCharCoordinates(PLAYER_PED)
                     local location = getLocationName(x, y, z)
-                    logDebug('Updating PURSUIT target location: ' .. location)
-                    updateSituationLocation(state.trackingTarget.situationId, x, y, z)
-                else
-                    logWarn('PURSUIT: Target handle not found (ID=' .. state.trackingTarget.playerId .. ')')
+                    logDebug('Updating PANIC location (coarse): ' .. location)
+                    updateSituationLocation(state.currentSituation.id, x, y, z)
                 end
+
+                -- Update pursuit target location at coarse interval
+                if state.trackingTarget and sampIsPlayerConnected(state.trackingTarget.playerId) then
+                    local targetHandle = select(2, sampGetCharHandleBySampPlayerId(state.trackingTarget.playerId))
+                    if targetHandle then
+                        local x, y, z = getCharCoordinates(targetHandle)
+                        local location = getLocationName(x, y, z)
+                        logDebug('Updating PURSUIT target location (coarse): ' .. location)
+                        updateSituationLocation(state.trackingTarget.situationId, x, y, z)
+                    else
+                        logWarn('PURSUIT: Target handle not found (ID=' .. state.trackingTarget.playerId .. ')')
+                    end
+                end
+
+                timers.lastLocationUpdate = currentTime
             end
-            
-            timers.lastLocationUpdate = currentTime
-        end
+
+            -- Aggressive broadcasting for active Panic or Pursuit (more frequent)
+            if currentTime - timers.lastSituationBroadcast >= CONFIG.SITUATION_BROADCAST_INTERVAL then
+                -- Panic: broadcast your current coords to the situation
+                if state.isInPanic and state.currentSituation then
+                    local x, y, z = getCharCoordinates(PLAYER_PED)
+                    logDebug('Broadcasting PANIC coords (aggressive): ' .. tostring(x) .. ',' .. tostring(y))
+                    updateSituationLocation(state.currentSituation.id, x, y, z)
+                end
+
+                -- Pursuit: broadcast the tracked target coords (if known)
+                if state.trackingTarget and sampIsPlayerConnected(state.trackingTarget.playerId) then
+                    local targetHandle = select(2, sampGetCharHandleBySampPlayerId(state.trackingTarget.playerId))
+                    if targetHandle then
+                        local x, y, z = getCharCoordinates(targetHandle)
+                        logDebug('Broadcasting PURSUIT coords (aggressive): ' .. tostring(x) .. ',' .. tostring(y))
+                        updateSituationLocation(state.trackingTarget.situationId, x, y, z)
+                    end
+                end
+
+                timers.lastSituationBroadcast = currentTime
+            end
         
         -- Rendering handled by mimgui binding via imgui.Process (renderMainWindow registered earlier)
     end

@@ -7,6 +7,8 @@ import type { PlayerRecord } from "./PlayersTable";
 import type { SituationRecord } from "./SituationsPanel";
 import type { UnitDto } from "@shared/api";
 
+const saMap = '../../../sa_map.png';
+
 interface OperationsMapProps {
   players: PlayerRecord[];
   units: UnitDto[];
@@ -23,6 +25,20 @@ const STATUS_MARKER_COLORS: Record<string, string> = {
   Unassigned: "bg-slate-400 text-slate-950",
   Recon: "bg-indigo-400 text-indigo-950",
   Support: "bg-cyan-400 text-cyan-950",
+  911: "bg-rose-600 text-white",
+};
+
+// Human-friendly labels for legend entries (keys match STATUS_MARKER_COLORS)
+const STATUS_LABELS: Record<string, string> = {
+  Pursuit: 'Pursuit',
+  'Code 7': 'Code 7',
+  'Traffic Stop': 'Traffic Stop',
+  Staged: 'Staged',
+  'On Patrol': 'On Patrol',
+  Unassigned: 'Unassigned',
+  Recon: 'Recon',
+  Support: 'Support',
+  911: '911 Call',
 };
 
 const HEAT_RING_STYLES: Record<string, string> = {
@@ -34,6 +50,7 @@ const HEAT_RING_STYLES: Record<string, string> = {
   Unassigned: "bg-muted/30",
   Recon: "bg-indigo-400/28",
   Support: "bg-cyan-400/28",
+  911: "bg-rose-500/28",
 };
 // Try adjusting these if markers appear off the map
 // Common ranges: [-3000, 3000] or [-6000, 6000]
@@ -53,7 +70,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const [dims, setDims] = React.useState<{ w: number; h: number }>({ w: 0, h: 0 });
-  const [showDebugGrid, setShowDebugGrid] = React.useState(true);
+  const [showDebugGrid, setShowDebugGrid] = React.useState(false);
   const [showCalibration, setShowCalibration] = React.useState(false);
 
   // Small named-location lookup: map common location names to world coords.
@@ -334,7 +351,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
                         // Not ready yet; render fallback image silently
                         return (
                           <img
-                            src={`/sa_map.png`}
+                            src={saMap}
                             alt="San Andreas map (fallback)"
                             style={{
                               position: "absolute",
@@ -356,7 +373,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
               return (
                 <>
                   <img
-                    src={`/sa_map.png`}
+                    src={saMap}
                     alt="San Andreas map"
                     style={{
                       position: "absolute",
@@ -592,7 +609,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
 
                     // whitelist of situation types we want to show on map (case-insensitive)
                     // Normalize by removing spaces/punctuation so variants like TRAFFICSTOP or "traffic stop" match
-                    const WHITELIST = ["pursuit", "code7", "trafficstop", "staged", "onpatrol", "unassigned", "recon", "support"];
+                    const WHITELIST = ["pursuit", "code7", "trafficstop", "staged", "onpatrol", "unassigned", "recon", "support", "911", "911call"];
                     const typeRaw = (raw.type ?? raw.code ?? "").toString();
                     const normalizeType = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
                     const typeNorm = normalizeType(typeRaw);
@@ -650,6 +667,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
                       if (/^code\s*\d+/i.test(typeRaw) || typeNorm.startsWith('code')) return 'Code 7';
                       switch (typeNorm) {
                         case 'pursuit': return 'Pursuit';
+                        case '911': return '911';
                         case 'trafficstop':
                         case 'traffic stop': return 'Traffic Stop';
                         case 'code 7': return 'Code 7';
@@ -847,11 +865,11 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
           <Compass className="h-4 w-4" />
           <span className="uppercase tracking-[0.26em]">Legend</span>
         </div>
-        <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap gap-3">
           {Object.entries(STATUS_MARKER_COLORS).map(([status, color]) => (
             <div key={status} className="flex items-center gap-2">
               <span className={cn("h-2.5 w-2.5 rounded-full", color)} />
-              <span className="text-muted-foreground">{status}</span>
+              <span className="text-muted-foreground">{STATUS_LABELS[status] ?? status}</span>
             </div>
           ))}
         </div>
