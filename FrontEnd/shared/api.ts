@@ -51,6 +51,7 @@ export interface PlayerPointDto {
   lastUpdate?: string;
   lastActivityTime?: string;
   isAFK?: boolean;
+  isInVehicle?: boolean;
 }
 
 export interface SituationDto {

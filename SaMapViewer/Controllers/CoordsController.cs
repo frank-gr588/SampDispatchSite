@@ -32,12 +32,21 @@ namespace SaMapViewer.Controllers
             public float X { get; set; }
             public float Y { get; set; }
             public bool IsAFK { get; set; }
+            public bool IsInVehicle { get; set; }
         }
 
         public class StatusDto
         {
             public string Nick { get; set; } = string.Empty;
             public string Status { get; set; } = string.Empty;
+        }
+
+        public class HeartbeatDto
+        {
+            public string Nick { get; set; } = string.Empty;
+            public bool IsAFK { get; set; }
+            public bool IsInVehicle { get; set; }
+            public bool Alive { get; set; } = true;
         }
 
         [HttpPost]
@@ -47,8 +56,10 @@ namespace SaMapViewer.Controllers
             if (string.IsNullOrWhiteSpace(data.Nick))
                 return BadRequest();
 
+            // Update player position only if transmitter indicates in-vehicle; if not, tracker will preserve last known location and set InVehicle=false
             _tracker.Update(data.Nick, data.X, data.Y);
-            
+            _tracker.UpdatePlayer(data.Nick, data.X, data.Y, data.IsInVehicle);
+
             // Обновляем AFK статус
             _tracker.SetPlayerAFK(data.Nick, data.IsAFK);
 
@@ -58,14 +69,15 @@ namespace SaMapViewer.Controllers
                 nick = data.Nick,
                 x = data.X,
                 y = data.Y,
-                isAFK = data.IsAFK
+                isAFK = data.IsAFK,
+                inVehicle = data.IsInVehicle
             });
 
             // также синхронизируем статус после движения
             var statusNow = _situations.GetStatus(data.Nick);
             _hubContext.Clients.All.SendAsync("UpdatePlayerStatus", new { nick = data.Nick, status = statusNow });
 
-            _ = _history.AppendAsync(new { type = "coords", nick = data.Nick, x = data.X, y = data.Y, isAFK = data.IsAFK });
+            _ = _history.AppendAsync(new { type = "coords", nick = data.Nick, x = data.X, y = data.Y, isAFK = data.IsAFK, inVehicle = data.IsInVehicle });
 
             return Ok();
         }
@@ -91,6 +103,51 @@ namespace SaMapViewer.Controllers
         public ActionResult<List<PlayerPoint>> GetAll()
         {
             return _tracker.GetAlivePlayers();
+        }
+
+        [HttpPost("heartbeat")]
+        public IActionResult Heartbeat([FromBody] HeartbeatDto data)
+        {
+            if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
+            if (string.IsNullOrWhiteSpace(data.Nick))
+                return BadRequest();
+
+            // If player exists, update flags and last seen; otherwise create a manual placeholder player
+            var existing = _tracker.GetPlayer(data.Nick);
+            float respX = -10000f, respY = -10000f;
+            if (existing == null)
+            {
+                var p = new PlayerPoint();
+                p.Nick = data.Nick;
+                p.X = -10000f;
+                p.Y = -10000f;
+                p.InVehicle = data.IsInVehicle;
+                p.IsAFK = data.IsAFK;
+                p.LastUpdate = System.DateTime.UtcNow;
+                _tracker.AddPlayer(p);
+            }
+            else
+            {
+                existing.SetInVehicle(data.IsInVehicle);
+                existing.IsAFK = data.IsAFK;
+                existing.LastUpdate = System.DateTime.UtcNow;
+                respX = existing.X;
+                respY = existing.Y;
+            }
+
+            // Broadcast lightweight update so frontends know player is alive / inVehicle
+            _hubContext.Clients.All.SendAsync("UpdatePlayer", new
+            {
+                nick = data.Nick,
+                x = respX,
+                y = respY,
+                isAFK = data.IsAFK,
+                inVehicle = data.IsInVehicle
+            });
+
+            _ = _history.AppendAsync(new { type = "heartbeat", nick = data.Nick, alive = data.Alive, isAFK = data.IsAFK, inVehicle = data.IsInVehicle });
+
+            return Ok();
         }
         
         private static bool CheckApiKey(Microsoft.AspNetCore.Http.HttpRequest req, string expected)

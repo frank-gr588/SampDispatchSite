@@ -40,6 +40,9 @@ export interface PlayerRecord {
   worldX?: number;
   worldY?: number;
   isAFK?: boolean;
+  // optional fields used by newer UI (may be absent for legacy data)
+  isInVehicle?: boolean;
+  lastSeenTs?: number;
 }
 
 const STATUS_STYLES: Record<string, string> = {

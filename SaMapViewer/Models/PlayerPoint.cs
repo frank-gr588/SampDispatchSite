@@ -35,6 +35,7 @@ namespace SaMapViewer.Models
         public string Nick { get; set; } = string.Empty;
         public float X { get; set; }
         public float Y { get; set; }
+        public bool InVehicle { get; set; }
         public PlayerStatus Status { get; set; }
         public PlayerRole Role { get; set; }
         public PlayerRank Rank { get; set; }
@@ -48,6 +49,7 @@ namespace SaMapViewer.Models
             Nick = string.Empty;
             X = -10000f;
             Y = -10000f;
+            InVehicle = false;
             Status = PlayerStatus.OnDutyOutOfUnit;
             Role = PlayerRole.Officer;
             Rank = PlayerRank.PoliceOfficer;
@@ -61,6 +63,7 @@ namespace SaMapViewer.Models
             Nick = nick;
             X = x;
             Y = y;
+            InVehicle = true;
             // Для игроков созданных вручную (маркер -10000,-10000) используем OnDutyOutOfUnit
             // Для игроков из скрипта используем OutOfDuty
             Status = (x == -10000f && y == -10000f) ? PlayerStatus.OnDutyOutOfUnit : PlayerStatus.OutOfDuty;
@@ -79,6 +82,16 @@ namespace SaMapViewer.Models
             // Если координаты изменились значительно, обновляем LastActivityTime
             LastActivityTime = DateTime.UtcNow;
             IsAFK = false;
+        }
+
+        public void SetInVehicle(bool inVehicle)
+        {
+            InVehicle = inVehicle;
+            // do not update LastUpdate when leaving vehicle to preserve last known marker
+            if (inVehicle)
+            {
+                LastUpdate = DateTime.UtcNow;
+            }
         }
 
         public void SetStatus(PlayerStatus status)

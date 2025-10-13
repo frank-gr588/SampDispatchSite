@@ -22,24 +22,36 @@ namespace SaMapViewer.Services
         }
 
         // Устаревший метод для совместимости с Lua скриптом
+        // Устаревший метод для совместимости с Lua скриптом
         public void Update(string nick, float x, float y)
         {
-            UpdatePlayer(nick, x, y);
+            UpdatePlayer(nick, x, y, true);
         }
 
-        public void UpdatePlayer(string nick, float x, float y)
+        public void UpdatePlayer(string nick, float x, float y, bool inVehicle = true)
         {
-            _logger.LogDebug("Updating player coordinates: {Nick} at ({X}, {Y})", nick, x, y);
+            _logger.LogDebug("Updating player coordinates: {Nick} at ({X}, {Y}) inVehicle={InVehicle}", nick, x, y, inVehicle);
             
             _players.AddOrUpdate(nick,
                 _ => {
                     _logger.LogInformation("Creating new player from script: {Nick} at ({X}, {Y})", nick, x, y);
-                    return new PlayerPoint(nick, x, y);
+                    var p = new PlayerPoint(nick, x, y);
+                    p.InVehicle = inVehicle;
+                    return p;
                 },
                 (_, existing) =>
                 {
-                    _logger.LogDebug("Updating existing player: {Nick} from ({OldX}, {OldY}) to ({NewX}, {NewY})", 
-                        nick, existing.X, existing.Y, x, y);
+                    _logger.LogDebug("Updating existing player: {Nick} from ({OldX}, {OldY}) to ({NewX}, {NewY}) inVehicle={InVehicle}", 
+                        nick, existing.X, existing.Y, x, y, inVehicle);
+
+                    if (!inVehicle)
+                    {
+                        // If the player is not in vehicle, we should not overwrite coordinates; just mark InVehicle=false and keep last known marker
+                        existing.SetInVehicle(false);
+                        return existing;
+                    }
+
+                    existing.SetInVehicle(true);
                     existing.Update(x, y);
                     return existing;
                 });

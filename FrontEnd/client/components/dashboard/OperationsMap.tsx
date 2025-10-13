@@ -72,6 +72,8 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
   const [dims, setDims] = React.useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [showDebugGrid, setShowDebugGrid] = React.useState(false);
   const [showCalibration, setShowCalibration] = React.useState(false);
+  // Track scheduled deletion timers for units to avoid repeated calls
+  const deletionTimers = React.useRef<Record<string, number | null>>({});
 
   // Small named-location lookup: map common location names to world coords.
   // Extend this list as needed. Keys are lower-cased for case-insensitive lookup.
@@ -558,6 +560,60 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
                     const wx = (primaryPlayer as any).worldX;
                     const wy = (primaryPlayer as any).worldY;
                     if (wx === undefined || wy === undefined) return null;
+
+                    // Determine whether any member of the unit is in vehicle recently
+                    const FIVE_MIN = 5 * 60 * 1000;
+                    const nowTs = Date.now();
+                    let anyInVehicle = false;
+                    for (const nick of unit.playerNicks || []) {
+                      const p = players.find(pl => String(pl.nickname).toLowerCase() === String(nick).toLowerCase());
+                      if (!p) continue;
+                      const lastSeen = (p as any).lastSeenTs || 0;
+                      const inVeh = Boolean((p as any).isInVehicle);
+                      if (inVeh && (nowTs - lastSeen) <= FIVE_MIN) {
+                        anyInVehicle = true;
+                        break;
+                      }
+                    }
+
+                    // If no member in vehicle recently, hide unit marker and schedule deletion after timeout
+                    if (!anyInVehicle) {
+                      // Schedule deletion once per unit (if not already scheduled)
+                      if (!deletionTimers.current[unit.id]) {
+                        const timer = window.setTimeout(async () => {
+                          try {
+                            // Re-check members before deleting
+                            const now = Date.now();
+                            let stillAny = false;
+                            for (const nick of unit.playerNicks || []) {
+                              const p = players.find(pl => String(pl.nickname).toLowerCase() === String(nick).toLowerCase());
+                              if (!p) continue;
+                              const lastSeen = (p as any).lastSeenTs || 0;
+                              const inVeh = Boolean((p as any).isInVehicle);
+                              if (inVeh && (now - lastSeen) <= FIVE_MIN) { stillAny = true; break; }
+                            }
+                            if (!stillAny) {
+                              await fetch(`/api/units/${unit.id}`, { method: 'DELETE', headers: { 'X-API-Key': 'changeme-key' } });
+                              try { await (window as any).refreshUnits?.(); } catch(e) {}
+                            }
+                          } catch (e) {
+                            console.warn('Unit auto-delete failed for', unit.id, e);
+                          } finally {
+                            deletionTimers.current[unit.id] = null;
+                          }
+                        }, FIVE_MIN);
+                        deletionTimers.current[unit.id] = timer;
+                      }
+                      return null;
+                    } else {
+                      // Active again - clear pending deletion timer if any
+                      const existing = deletionTimers.current[unit.id];
+                      if (existing) {
+                        clearTimeout(existing as number);
+                        deletionTimers.current[unit.id] = null;
+                      }
+                    }
+
                     const pos = mapToScreen(wx, wy);
                     if (!pos.ready) return null;
 

@@ -41,10 +41,13 @@ const adaptPlayerForUI = (player: PlayerPointDto, index: number): PlayerRecord =
   channel: "TAC 1",
   lastUpdate: new Date(player.lastUpdate || Date.now()).toLocaleTimeString('ru-RU'),
   priority: "Routine" as const,
-  location: { x: player.x || 0, y: player.y || 0 },
-  worldX: player.x,
-  worldY: player.y,
+  location: { x: player.x ?? 0, y: player.y ?? 0 },
+  worldX: typeof player.x === 'number' ? player.x : undefined,
+  worldY: typeof player.y === 'number' ? player.y : undefined,
   isAFK: player.isAFK || false,
+  // New fields used by map rendering logic
+  isInVehicle: (player as any).inVehicle ?? (player as any).isInVehicle ?? false,
+  lastSeenTs: player.lastUpdate ? new Date(player.lastUpdate).getTime() : Date.now(),
 } as any);
 
 // Адаптер для конвертации SituationDto в SituationRecord
@@ -270,7 +273,10 @@ export default function Index() {
         try {
           await fetch(`/api/units/${unitId}/status`, {
             method: "PUT",
-            headers: { "Content-Type": "application/json", "X-API-Key": "changeme-key" },
+            headers: {
+              "Content-Type": "application/json",
+              "X-API-Key": "changeme-key"
+            },
             body: JSON.stringify({ status: "Code 2" })
           });
           // Refresh units from backend to get updated state
