@@ -4,6 +4,10 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Authors>Stephan Grigorchuk</Authors>
+    <Copyright>Copyright © 2024 Stephan Grigorchuk</Copyright>
+    <PackageLicenseExpression>CC-BY-NC-4.0</PackageLicenseExpression>
+    <Description>Real-Time Law Enforcement Operations Management System for SA-MP</Description>
   </PropertyGroup>
 
 </Project>
