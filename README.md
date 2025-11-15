@@ -1,5 +1,8 @@
 # sampMap - Real-Time Law Enforcement Operations Management System
 
+> **Copyright © 2024 Stephan Grigorchuk**  
+> Licensed under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) - Attribution required, Non-commercial use only
+
 ## Overview
 
 **sampMap** is a comprehensive real-time operations management and tracking system designed specifically for law enforcement role-play scenarios in San Andreas Multiplayer (SA-MP). The system provides live player tracking, unit management, incident coordination, and tactical communications for multiplayer gaming communities that simulate police operations.
@@ -1269,7 +1272,17 @@ policy.WithOrigins("http://localhost:5173", "https://yourdomain.com")
 
 ## License
 
-*(Specify your license here, e.g., MIT, Apache 2.0, proprietary, etc.)*
+This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** License.
+
+**You are free to:**
+- Share and redistribute the material
+- Adapt, remix, and build upon the material
+
+**Under the following terms:**
+- **Attribution** — You must give appropriate credit to Stephan Grigorchuk and indicate if changes were made
+- **NonCommercial** — You may not use the material for commercial purposes
+
+See the [LICENSE](LICENSE) file for full details or visit [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/).
 
 ## Contributing
 

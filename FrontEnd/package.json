@@ -1,6 +1,9 @@
 {
   "name": "fusion-starter",
   "private": true,
+  "version": "1.0.0",
+  "license": "CC-BY-NC-4.0",
+  "author": "Stephan Grigorchuk <stephan.grigorchuk@gmail.com>",
   "type": "module",
   "pkg": {
     "assets": [
