@@ -29,7 +29,9 @@ builder.Services.AddDbContext<SaMapDbContext>((sp, opts) =>
         Directory.CreateDirectory(dbDir);
 
     if (!File.Exists(dbPath))
+    {
         using var _ = File.Create(dbPath);
+    }
 
     opts.UseSqlite($"Data Source={dbPath}");
 });

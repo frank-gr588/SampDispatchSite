@@ -22,16 +22,14 @@ namespace SaMapViewer.Controllers
         private readonly IHubContext<CoordsHub> _hub;
         private readonly HistoryService _history;
         private readonly TacticalChannelsService _channels;
-        private readonly Microsoft.Extensions.Options.IOptions<SaMapViewer.Services.SaOptions> _options;
         private readonly SaMapDbContext _db;
 
-        public SituationsController(SituationsService situations, IHubContext<CoordsHub> hub, HistoryService history, TacticalChannelsService channels, Microsoft.Extensions.Options.IOptions<SaMapViewer.Services.SaOptions> options, SaMapDbContext db)
+        public SituationsController(SituationsService situations, IHubContext<CoordsHub> hub, HistoryService history, TacticalChannelsService channels, SaMapDbContext db)
         {
             _situations = situations;
             _hub = hub;
             _history = history;
             _channels = channels;
-            _options = options;
             _db = db;
         }
 
@@ -49,7 +47,7 @@ namespace SaMapViewer.Controllers
         {
             if (string.IsNullOrWhiteSpace(dto?.Type)) return BadRequest();
 
-            var creatorNick = string.IsNullOrWhiteSpace(dto?.CreatorNick) ? "system" : dto.CreatorNick;
+            var creatorNick = string.IsNullOrWhiteSpace(dto!.CreatorNick) ? "system" : dto.CreatorNick;
             var sit = await _situations.Create(dto.Type, dto.Metadata ?? new Dictionary<string, string>(), creatorNick);
 
             // If metadata contains a channel name, attach that channel to the newly created situation
@@ -427,13 +425,14 @@ namespace SaMapViewer.Controllers
         }
 
         [HttpGet("history")]
-        public IActionResult History()
+        public async Task<IActionResult> History()
         {
-            // Историю отдаём как сырой файл для простоты (JSONL)
-            var path = _options.Value.HistoryPath ?? "history.jsonl";
-            if (!System.IO.File.Exists(path)) return Ok(new object[0]);
-            var lines = System.IO.File.ReadAllLines(path);
-            return File(System.Text.Encoding.UTF8.GetBytes(string.Join("\n", lines)), "application/jsonl");
+            var logs = await _db.AuditLogs
+                .OrderByDescending(a => a.Timestamp)
+                .Take(500)
+                .Select(a => new { a.Timestamp, a.EventType, a.Payload })
+                .ToListAsync();
+            return Ok(logs);
         }
     }
 }

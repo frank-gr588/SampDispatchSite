@@ -46,9 +46,9 @@ namespace SaMapViewer.Data
                         v => JsonSerializer.Serialize(v, jsonOptions),
                         v => JsonSerializer.Deserialize<HashSet<string>>(v, jsonOptions) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase))
                     .Metadata.SetValueComparer(new ValueComparer<HashSet<string>>(
-                        (c1, c2) => c1.SequenceEqual(c2),
-                        c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
-                        c => new HashSet<string>(c, StringComparer.OrdinalIgnoreCase)));
+                        (c1, c2) => c1!.SequenceEqual(c2!),
+                        c => c!.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
+                        c => new HashSet<string>(c!, StringComparer.OrdinalIgnoreCase)));
             });
 
             // Situation
@@ -62,18 +62,18 @@ namespace SaMapViewer.Data
                         v => JsonSerializer.Serialize(v, jsonOptions),
                         v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, jsonOptions) ?? new Dictionary<string, string>())
                     .Metadata.SetValueComparer(new ValueComparer<Dictionary<string, string>>(
-                        (d1, d2) => d1.Count == d2.Count && !d1.Except(d2).Any(),
-                        d => d.Aggregate(0, (a, kv) => HashCode.Combine(a, kv.Key.GetHashCode(), kv.Value.GetHashCode())),
-                        d => new Dictionary<string, string>(d)));
+                        (d1, d2) => d1!.Count == d2!.Count && !d1.Except(d2).Any(),
+                        d => d!.Aggregate(0, (a, kv) => HashCode.Combine(a, kv.Key.GetHashCode(), kv.Value.GetHashCode())),
+                        d => new Dictionary<string, string>(d!)));
 
                 builder.Property(s => s.Units)
                     .HasConversion(
                         v => JsonSerializer.Serialize(v, jsonOptions),
                         v => JsonSerializer.Deserialize<HashSet<Guid>>(v, jsonOptions) ?? new HashSet<Guid>())
                     .Metadata.SetValueComparer(new ValueComparer<HashSet<Guid>>(
-                        (c1, c2) => c1.SetEquals(c2),
-                        c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
-                        c => new HashSet<Guid>(c)));
+                        (c1, c2) => c1!.SetEquals(c2!),
+                        c => c!.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
+                        c => new HashSet<Guid>(c!)));
             });
 
             // Tactical channels

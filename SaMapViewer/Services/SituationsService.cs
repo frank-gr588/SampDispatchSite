@@ -255,24 +255,6 @@ namespace SaMapViewer.Services
             else await RemoveTag(nick, "PANIC");
         }
 
-        [Obsolete("Use AddUnitToSituation instead")]
-        public async Task Join(Guid id, string nick)
-        {
-            var (found, s) = await TryGet(id);
-            if (!found || s == null) return;
-            var tag = GetTagForSituation(s);
-            if (!string.IsNullOrEmpty(tag)) await AddTag(nick, tag);
-        }
-
-        [Obsolete("Use RemoveUnitFromSituation instead")]
-        public async Task Leave(Guid id, string nick)
-        {
-            var (found, s) = await TryGet(id);
-            if (!found || s == null) return;
-            var tag = GetTagForSituation(s);
-            if (!string.IsNullOrEmpty(tag)) await RemoveTag(nick, tag);
-        }
-
         public async Task AddPlayerToSituation(Guid id, string nick)
         {
             var (found, s) = await TryGet(id);

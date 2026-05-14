@@ -1,24 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
-import type { Plugin } from "vite";
-// import { createServer as createApiServer } from "./server"; // Disabled - using C# backend
 
-// Attach Express API to Vite dev server for local development (DISABLED - using C# backend)
-function apiMiddlewarePlugin(): Plugin {
-  return {
-    name: "fusion-api-middleware",
-    configureServer(server) {
-      // Disabled: using C# backend via proxy instead
-      // const app = createApiServer();
-      // server.middlewares.use(app);
-    },
-  };
-}
-
-// Client build configuration
+// Client build configuration — API proxied to C# backend on :5000
 export default defineConfig({
-  plugins: [react(), apiMiddlewarePlugin()],
+  plugins: [react()],
   build: {
     outDir: "dist/spa",
     emptyOutDir: true,

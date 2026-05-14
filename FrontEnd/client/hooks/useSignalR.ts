@@ -30,7 +30,7 @@ export function useSignalR(): SignalRContextValue {
   useEffect(() => {
     const conn = getConnection();
     
-    const onState = () => setState(conn.state as SignalRState);
+    const onState = () => setState(conn.state as unknown as SignalRState);
     conn.onreconnecting(() => setState('reconnecting'));
     conn.onreconnected(() => setState('connected'));
     conn.onclose(() => setState('disconnected'));

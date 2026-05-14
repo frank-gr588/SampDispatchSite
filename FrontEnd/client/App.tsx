@@ -9,8 +9,8 @@ import NotFound from "./pages/NotFound";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Dashboard from "./pages/Dashboard";
 import MapView from "./pages/MapView";
-import BoardView from "./pages/BoardView";
-import ManagementView from "./pages/ManagementView";
+import DatabaseView from "./pages/DatabaseView";
+import LoginPage from "./pages/LoginPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,11 +26,11 @@ const router = createBrowserRouter(
       errorElement: <ErrorBoundary />,
       children: [
         { index: true, element: <MapView /> },
-        { path: "board", element: <BoardView /> },
-        { path: "management", element: <ManagementView /> },
+        { path: "db", element: <DatabaseView /> },
       ],
     },
-    { path: "*", element: <NotFound />, errorElement: <ErrorBoundary /> },
+    { path: "/login", element: <LoginPage /> },
+    { path: "*", element: <NotFound /> },
   ],
   {
     future: ({

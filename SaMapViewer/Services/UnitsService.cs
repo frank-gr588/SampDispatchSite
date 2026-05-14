@@ -426,31 +426,6 @@ namespace SaMapViewer.Services
             await SetLeadUnit(unitId, isLeadUnit);
             return (true, "Флаг лидера изменён");
         }
-
-        // Устаревшие методы для обратной совместимости
-        [Obsolete("Use CreateUnit with List<string> playerNicks instead")]
-        public Task<Unit> CreateUnit(string marking, string playerNick, bool isLeadUnit = false)
-        {
-            return CreateUnitFromSinglePlayer(marking, playerNick, isLeadUnit);
-        }
-
-        [Obsolete("Use RemoveUnit instead")]
-        public Task Delete(Guid id) => RemoveUnit(id);
-
-        [Obsolete("Use UpdateUnit instead")]
-        public Task Rename(Guid id, string marking) => UpdateUnit(id, marking);
-
-        [Obsolete("Use SetUnitStatus instead")]
-        public Task SetStatus(Guid id, string status) => SetUnitStatus(id, status);
-
-        [Obsolete("Use SetLeadUnit instead")]
-        public Task SetRed(Guid id, bool isRed) => SetLeadUnit(id, isRed);
-
-        [Obsolete("Use AddPlayerToUnit instead")]
-        public Task AddPlayer(Guid id, string nick) => AddPlayerToUnit(id, nick);
-
-        [Obsolete("Use RemovePlayerFromUnit instead")]
-        public Task RemovePlayer(Guid id, string nick) => RemovePlayerFromUnit(id, nick);
     }
 }
 

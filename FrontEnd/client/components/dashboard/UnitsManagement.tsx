@@ -41,7 +41,6 @@ import {
   getPlayerStatusColor
 } from "@shared/api";
 import { emitAppEvent, apiGet, apiPost, apiPut, apiDelete } from "@/lib/utils";
-import type { PlayerPointDto } from "@shared/api";
 import { MarkingSelector } from "./MarkingSelector";
 import { usePlayers, useUnits } from "@/hooks/useDataQueries";
 

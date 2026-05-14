@@ -13,6 +13,15 @@ export default {
       },
     },
     extend: {
+      borderRadius: {
+        lg: "0px",
+        md: "0px",
+        sm: "0px",
+      },
+      fontFamily: {
+        mono: ["Share Tech Mono", "monospace"],
+        sans: ["Share Tech Mono", "monospace"],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
@@ -30,6 +39,10 @@ export default {
         destructive: {
           DEFAULT: "hsl(var(--destructive))",
           foreground: "hsl(var(--destructive-foreground))",
+        },
+        warning: {
+          DEFAULT: "hsl(var(--warning))",
+          foreground: "hsl(var(--warning-foreground))",
         },
         muted: {
           DEFAULT: "hsl(var(--muted))",

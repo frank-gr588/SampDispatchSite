@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
-import { OperationsMap } from "@/components/dashboard/OperationsMapV2";
+import { OperationsMap } from "@/components/dashboard/OperationsMapV3";
 import { usePlayers, useUnits, useSituations } from "@/hooks/useDataQueries";
 import { apiPost, apiPut } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";

@@ -218,7 +218,7 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
     // Apply optimistic changes locally
     setSelectedChannel(channel);
     setSelectedSituation(prev => prev ? { ...prev, metadata: newMetadata } : prev);
-    setSituations(prev => Array.isArray(prev) ? prev.map(s => (String(s?.id) === String(situation.id) ? { ...s, metadata: newMetadata } : s)) : prev);
+    refreshSituations();
 
     // Send request in background; if it fails, revert optimistic changes and notify user
     try {
@@ -291,7 +291,7 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
       // Revert optimistic changes
       setSelectedChannel(previousMetadata?.channel || TACTICAL_CHANNELS[0].value);
       setSelectedSituation(prev => prev ? { ...prev, metadata: previousMetadata } : prev);
-      setSituations(prev => Array.isArray(prev) ? prev.map(s => (String(s?.id) === String(situation.id) ? { ...s, metadata: previousMetadata } : s)) : prev);
+      refreshSituations();
     }
   };
 
