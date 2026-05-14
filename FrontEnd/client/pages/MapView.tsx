@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback } from "react";
 import { OperationsMap } from "@/components/dashboard/OperationsMapV3";
 import { usePlayers, useUnits, useSituations } from "@/hooks/useDataQueries";
+import { useRecommendations } from "@/hooks/useRecommendations";
 import { apiPost, apiPut } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { qk } from "@/hooks/useDataQueries";
@@ -10,6 +11,7 @@ export default function MapView() {
   const { data: players } = usePlayers();
   const { data: units } = useUnits();
   const { data: situations } = useSituations();
+  const recommendations = useRecommendations(units, situations);
   const qc = useQueryClient();
 
   const invalidate = useCallback(() => {
@@ -47,6 +49,7 @@ export default function MapView() {
       units={units ?? []}
       assignments={assignments}
       situations={situations ?? []}
+      recommendations={recommendations}
       onAssignmentChange={handleAssignmentChange}
     />
   );

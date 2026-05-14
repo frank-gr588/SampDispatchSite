@@ -11,6 +11,7 @@ import Dashboard from "./pages/Dashboard";
 import MapView from "./pages/MapView";
 import DatabaseView from "./pages/DatabaseView";
 import LoginPage from "./pages/LoginPage";
+import { AuthProvider, RequireAuth } from "./components/auth/AuthGuard";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -22,7 +23,7 @@ const router = createBrowserRouter(
   [
     {
       path: "/",
-      element: <Dashboard />,
+      element: <RequireAuth><Dashboard /></RequireAuth>,
       errorElement: <ErrorBoundary />,
       children: [
         { index: true, element: <MapView /> },
@@ -42,10 +43,12 @@ const router = createBrowserRouter(
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <RouterProvider router={router} />
-    </TooltipProvider>
+    <AuthProvider>
+      <TooltipProvider>
+        <Toaster />
+        <RouterProvider router={router} />
+      </TooltipProvider>
+    </AuthProvider>
   </QueryClientProvider>
 );
 

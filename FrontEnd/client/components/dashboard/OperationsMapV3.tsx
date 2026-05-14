@@ -1,6 +1,9 @@
-import { cn } from '@/lib/utils';
+import { cn, apiPost, apiPut } from '@/lib/utils';
 import * as React from 'react';
 import type { PlayerPointDto, UnitDto, SituationDto } from '@shared/api';
+import type { Recommendation } from '@/hooks/useRecommendations';
+import { useQueryClient } from '@tanstack/react-query';
+import { qk } from '@/hooks/useDataQueries';
 
 const saMap = '../../../sa_map.png';
 
@@ -9,13 +12,15 @@ export interface OperationsMapProps {
   units: UnitDto[];
   assignments?: Record<string, string | null>;
   situations?: SituationDto[];
+  recommendations?: Recommendation[];
   onAssignmentChange?: (unitId: string, situationId: string | null) => void;
 }
 
 const WORLD_MIN_X = -3000; const WORLD_MAX_X = 3000;
 const WORLD_MIN_Y = -3000; const WORLD_MAX_Y = 3000;
 
-export function OperationsMap({ players, units, situations }: OperationsMapProps) {
+export function OperationsMap({ players, units, situations, recommendations, onAssignmentChange }: OperationsMapProps) {
+  const qc = useQueryClient();
   const [scale, setScale] = React.useState(1);
   const [offset, setOffset] = React.useState({ x: 0, y: 0 });
   const [dims, setDims] = React.useState({ w: 800, h: 600 });
@@ -123,10 +128,15 @@ export function OperationsMap({ players, units, situations }: OperationsMapProps
           );
         })}
       </div>
-      <div className="absolute top-2 left-2 flex gap-1 z-10">
-        {[{ l: '+', a: () => setScale(s => Math.min(10, s + 0.3)) }, { l: '\u2212', a: () => setScale(s => Math.max(0.5, s - 0.3)) }, { l: '\u2302', a: () => { setScale(1); setOffset({ x: 0, y: 0 }); } }].map(b => (
-          <button key={b.l} onClick={b.a} className="w-[22px] h-[22px] flex items-center justify-center border border-[#003d10] bg-[#020304] text-[#5a9a5a] text-[11px] hover:text-[#33ff66] hover:border-[#33ff66]">{b.l}</button>
-        ))}
+      {/* Controls bar */}
+      <div className="absolute top-2 left-2 flex items-center gap-0.5 z-10">
+        <button onClick={() => setScale(s => Math.min(10, s + 0.4))} title="Zoom In"
+          className="w-[26px] h-[26px] flex items-center justify-center border border-[#007a1f] bg-[#020304] text-[#33ff66] text-[14px] hover:bg-[#003d10] active:bg-[#007a1f] transition-colors font-mono">+</button>
+        <button onClick={() => setScale(s => Math.max(0.5, s - 0.4))} title="Zoom Out"
+          className="w-[26px] h-[26px] flex items-center justify-center border border-[#007a1f] bg-[#020304] text-[#33ff66] text-[14px] hover:bg-[#003d10] active:bg-[#007a1f] transition-colors font-mono">{'\u2212'}</button>
+        <button onClick={() => { setScale(1); setOffset({ x: 0, y: 0 }); }} title="Reset View"
+          className="w-[26px] h-[26px] flex items-center justify-center border border-[#007a1f] bg-[#020304] text-[#33ff66] text-[12px] hover:bg-[#003d10] active:bg-[#007a1f] transition-colors font-mono">{'\u2302'}</button>
+        <span className="text-[9px] text-[#5a9a5a] ml-1 font-mono">{Math.round(scale * 100)}%</span>
       </div>
       <div className="absolute bottom-3 right-3 w-[36px] h-[36px] flex items-center justify-center border border-[#003d10] bg-[#020304]/80 text-[#33ff66] text-[11px] font-mono">N</div>
       {selUnit && (
@@ -136,6 +146,35 @@ export function OperationsMap({ players, units, situations }: OperationsMapProps
           <div className="text-[#5a9a5a]">STATUS: <span className="text-[#33ff66]">{selUnit.status}</span></div>
           <div className="text-[#5a9a5a]">CREW: <span className="text-[#33ff66]">{selUnit.playerCount}</span></div>
           <div className="text-[#5a9a5a] mt-1 text-[10px]">[CLICK TO DISMISS]</div>
+        </div>
+      )}
+
+      {/* Recommendations panel — bottom left */}
+      {recommendations && recommendations.length > 0 && (
+        <div className="absolute bottom-3 left-3 z-10 border border-[#007a1f] bg-[#060a0e]/95 p-2 max-w-[260px] max-h-[180px] overflow-auto">
+          <div className="text-[9px] text-[#5a9a5a] uppercase tracking-[2px] mb-1.5 border-b border-[#003d10] pb-1">
+            RECOMMENDED ASSIGNMENTS
+          </div>
+          {recommendations.map((r, i) => (
+            <div key={i} className="flex items-center gap-1.5 py-0.5 border-b border-[#020304] last:border-0 text-[9px]">
+              <span className="text-[#33ff66] font-mono w-[8px]">{i + 1}</span>
+              <span className="text-[#5a9a5a] w-[55px] truncate">{r.unitMarking}</span>
+              <span className="text-[#003d10]">{'\u2192'}</span>
+              <span className="text-[#33ff66] flex-1 truncate text-[8px]">{r.situationTitle}</span>
+              <span className="text-[#5a9a5a] text-[8px]">{r.distance}m</span>
+              <button onClick={async () => {
+                try {
+                  await apiPut(`/api/units/${r.unitId}/status`, { status: 'Code 2' });
+                  await apiPost(`/api/situations/${r.situationId}/units/add`, { unitId: r.unitId, asLeadUnit: false });
+                  qc.invalidateQueries({ queryKey: qk.units });
+                  qc.invalidateQueries({ queryKey: qk.situations });
+                } catch (e) { console.error('Assign failed', e); }
+              }}
+                className="text-[#003d10] hover:text-[#33ff66] border border-[#003d10] hover:border-[#33ff66] px-1 text-[8px] shrink-0">
+                ASSIGN
+              </button>
+            </div>
+          ))}
         </div>
       )}
     </div>

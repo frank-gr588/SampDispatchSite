@@ -2,12 +2,14 @@ import { useState, useEffect, useCallback } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useDataSync, usePlayers, useUnits, useSituations } from '@/hooks/useDataQueries';
 import { useSignalR } from '@/hooks/useSignalR';
+import { useAuth } from '@/components/auth/AuthGuard';
 import { cn } from '@/lib/utils';
 
 export default function Dashboard() {
   const { state } = useSignalR();
   useDataSync();
   const navigate = useNavigate();
+  const { auth, logout } = useAuth();
   const loc = useLocation();
 
   const { data: players } = usePlayers();
@@ -36,6 +38,7 @@ export default function Dashboard() {
           <span className="text-[#5a9a5a] text-[10px]">SAN ANDREAS NETWORK</span>
         </div>
         <div className="flex items-center gap-6 text-[#5a9a5a] text-[10px]">
+          <span>OPR: <span className="text-[#33ff66]">{auth.badgeId}</span></span>
           <span>UNITS <span className="text-[#33ff66]">{active}</span>/{total}</span>
           <span>CRITICAL <span className={crit > 0 ? 'text-[#ff2020]' : 'text-[#33ff66]'}>{crit}</span></span>
           <span className="flex items-center gap-1">
@@ -43,6 +46,10 @@ export default function Dashboard() {
             <span className={online ? 'text-[#00e5ff]' : 'text-[#ff2020]'}>{online ? 'SRV:ONLINE' : 'SRV:OFFLINE'}</span>
           </span>
           <span className="text-[#33ff66] text-[13px] tracking-[1px]">{clock}</span>
+          <button onClick={() => { logout(); navigate('/login'); }}
+            className="text-[#5a9a5a] text-[9px] border border-[#003d10] px-2 py-0.5 hover:text-[#ff2020] hover:border-[#ff2020] uppercase tracking-[1px]">
+            LOGOUT
+          </button>
         </div>
       </header>
 

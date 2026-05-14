@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '@/components/auth/AuthGuard';
 
 export default function LoginPage() {
   const [badge, setBadge] = useState('');
@@ -7,6 +8,7 @@ export default function LoginPage() {
   const [stage, setStage] = useState<'idle' | 'loading' | 'granted'>('idle');
   const [loadText, setLoadText] = useState('');
   const navigate = useNavigate();
+  const { login } = useAuth();
 
   const handleAuth = () => {
     if (!badge || !pass) return;
@@ -23,9 +25,10 @@ export default function LoginPage() {
       i++;
       if (i >= steps.length) {
         clearInterval(iv);
-        setTimeout(() => navigate('/'), 600);
+        login(badge, badge);
+        setTimeout(() => navigate('/'), 400);
       }
-    }, 800);
+    }, 700);
   };
 
   return (
