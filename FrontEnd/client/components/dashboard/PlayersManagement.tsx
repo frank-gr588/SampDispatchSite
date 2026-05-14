@@ -38,14 +38,14 @@ import {
   getPlayerRankColor
 } from "@shared/api";
 import { emitAppEvent, apiPut, apiPost, apiDelete } from "@/lib/utils";
-import { useData } from "@/contexts/DataContext";
+import { usePlayers } from "@/hooks/useDataQueries";
 
 interface PlayersManagementProps {
   className?: string;
 }
 
 export function PlayersManagement({ className }: PlayersManagementProps) {
-  const { players, refreshPlayers } = useData();
+  const { data: players = [], refetch: refreshPlayers } = usePlayers();
   const [filteredPlayers, setFilteredPlayers] = useState<PlayerPointDto[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string | "all">("all");

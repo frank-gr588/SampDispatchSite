@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { useData } from "@/contexts/DataContext";
+import { useTacticalChannels, useSituations, useUnits } from "@/hooks/useDataQueries";
 import {
   Select,
   SelectContent,
@@ -37,14 +37,9 @@ import {
   CreateSituationRequest
 } from "@shared/api";
 import { emitAppEvent, apiGet, apiPost, apiPut, apiDelete } from "@/lib/utils";
-import type { SituationRecord } from "./SituationsPanel";
 
 interface SituationsManagementProps {
   className?: string;
-  situations?: SituationRecord[];
-  setSituations?: React.Dispatch<React.SetStateAction<SituationRecord[]>>;
-  assignments?: Record<string, string | null>;
-  setAssignments?: React.Dispatch<React.SetStateAction<Record<string, string | null>>>;
 }
 
 const SITUATION_TYPES = [
@@ -91,9 +86,9 @@ const sanitizeSituation = (situation: SituationDto): SituationDto => ({
 });
 
 export function SituationsManagement({ className }: SituationsManagementProps) {
-  // Используем глобальное состояние из Context
-  const { situations, setSituations, units, refreshSituations, refreshUnits, refreshTacticalChannels, isLoading: globalLoading } = useData();
-  const { tacticalChannels } = useData();
+  const { data: situations = [], refetch: refreshSituations } = useSituations();
+  const { data: units = [], refetch: refreshUnits } = useUnits();
+  const { data: tacticalChannels = [], refetch: refreshTacticalChannels } = useTacticalChannels();
   
   
   const [filteredSituations, setFilteredSituations] = useState<SituationDto[]>([]);

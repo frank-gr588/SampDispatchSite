@@ -10,12 +10,11 @@ import {
 } from "react";
 import { MessageSquare } from "lucide-react";
 
-import type { UnitDto } from "@shared/api";
-import type { SituationRecord } from "./SituationsPanel";
+import type { UnitDto, SituationDto } from "@shared/api";
 
 interface AssignmentBoardProps {
   units: UnitDto[];
-  situations: SituationRecord[];
+  situations: SituationDto[];
   assignments: Record<string, string | null>;
   onAssignmentChange: (unitId: string, situationId: string | null) => void;
 }
@@ -27,6 +26,20 @@ type Connection = {
 };
 
 const DRAG_DATA_TYPE = "application/x-dispatch-player";
+
+// Helpers to extract display values from SituationDto
+const sitTitle = (s: SituationDto) => s.metadata?.title || s.type || 'Без названия';
+const sitCode = (s: SituationDto) => (s.type ?? '—').toUpperCase();
+const sitStatus = (s: SituationDto) => s.metadata?.status || (s.isActive ? 'Active' : 'Monitoring');
+const sitChannel = (s: SituationDto) => s.metadata?.channel || '—';
+const sitNotes = (s: SituationDto) => s.metadata?.notes;
+const sitLocation = (s: SituationDto) => s.locationName || s.metadata?.location || '—';
+const sitUnitsCount = (s: SituationDto) => (s.units?.length ?? 0);
+const sitLeadUnit = (s: SituationDto, units: UnitDto[]) => {
+  const assigned = units.filter(u => String(u.situationId) === String(s.id));
+  const lead = assigned.find(u => u.isLeadUnit);
+  return lead?.marking || 'Не назначен';
+};
 
 export function AssignmentBoard({
   units,
@@ -345,10 +358,10 @@ export function AssignmentBoard({
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <p className="text-[0.6rem] uppercase tracking-[0.3em] text-muted-foreground">
-                        {situation.code ?? "—"}
+                        {sitCode(situation)}
                       </p>
                       <h3 className="text-base font-semibold text-foreground">
-                        {situation.title ?? "Без названия"}
+                        {sitTitle(situation)}
                       </h3>
                     </div>
                     <div className="flex flex-col items-end gap-2 text-right">
@@ -356,14 +369,14 @@ export function AssignmentBoard({
                         variant="outline"
                         className="border-transparent bg-primary/10 px-3 py-1 text-xs font-medium text-primary"
                       >
-                        {situation.status ?? "—"}
+                        {sitStatus(situation)}
                       </Badge>
                       <p className="text-[0.6rem] uppercase tracking-[0.24em] text-muted-foreground">
-                        {situation.channel ?? "—"}
+                        {sitChannel(situation)}
                       </p>
                     </div>
                   </div>
-                  {situation.notes && (
+                  {sitNotes(situation) && (
                     <div className="mt-3 rounded-lg border border-border/30 bg-muted/20 px-3 py-2">
                       <div className="flex items-center gap-2 mb-1">
                         <MessageSquare className="w-3 h-3 text-muted-foreground/70" />
@@ -371,7 +384,7 @@ export function AssignmentBoard({
                           Комментарий
                         </span>
                       </div>
-                      <p className="text-xs text-foreground/90 whitespace-pre-wrap">{situation.notes}</p>
+                      <p className="text-xs text-foreground/90 whitespace-pre-wrap">{sitNotes(situation)}</p>
                     </div>
                   )}
                   <div className="mt-4 grid gap-4 text-xs text-muted-foreground sm:grid-cols-2">
@@ -379,13 +392,13 @@ export function AssignmentBoard({
                       <span className="block text-[0.58rem] uppercase tracking-[0.24em] text-muted-foreground/70">
                         Местоположение
                       </span>
-                      <span className="text-foreground/90">{situation.location}</span>
+                      <span className="text-foreground/90">{sitLocation(situation)}</span>
                     </div>
                     <div>
                       <span className="block text-[0.58rem] uppercase tracking-[0.24em] text-muted-foreground/70">
                         Ведущий юнит
                       </span>
-                      <span className="text-foreground/90">{situation.leadUnit}</span>
+                      <span className="text-foreground/90">{sitLeadUnit(situation, units)}</span>
                     </div>
                   </div>
                   <div className="mt-4 rounded-2xl border border-border/30 bg-background/50 p-4">

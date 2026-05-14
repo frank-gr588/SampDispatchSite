@@ -35,52 +35,6 @@ namespace SaMapViewer.Controllers
             _db = db;
         }
 
-        private void EnsureSqliteColumn(string tableName, string columnName, string columnDefinition)
-        {
-            var connection = _db.Database.GetDbConnection();
-            if (connection.State != System.Data.ConnectionState.Open)
-            {
-                connection.Open();
-            }
-
-            using var checkCmd = connection.CreateCommand();
-            checkCmd.CommandText = $"PRAGMA table_info(\"{tableName}\");";
-
-            var exists = false;
-            using (var reader = checkCmd.ExecuteReader())
-            {
-                while (reader.Read())
-                {
-                    var name = reader["name"]?.ToString();
-                    if (string.Equals(name, columnName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        exists = true;
-                        break;
-                    }
-                }
-            }
-
-            if (exists)
-                return;
-
-            using var alterCmd = connection.CreateCommand();
-            alterCmd.CommandText = $"ALTER TABLE \"{tableName}\" ADD COLUMN \"{columnName}\" {columnDefinition};";
-            alterCmd.ExecuteNonQuery();
-        }
-
-        private void EnsureSituationsSqliteCompatibility()
-        {
-            if (!_db.Database.IsSqlite())
-                return;
-
-            EnsureSqliteColumn("Situations", "CreatorNick", "TEXT NOT NULL DEFAULT ''");
-            EnsureSqliteColumn("Situations", "GreenUnitId", "TEXT NULL");
-            EnsureSqliteColumn("Situations", "RedUnitId", "TEXT NULL");
-            EnsureSqliteColumn("Situations", "LocationName", "TEXT NOT NULL DEFAULT ''");
-            EnsureSqliteColumn("Situations", "X", "REAL NULL");
-            EnsureSqliteColumn("Situations", "Y", "REAL NULL");
-        }
-
         public class CreateDto
         {
             public string Type { get; set; } = string.Empty; // code7, pursuit, trafficstop, code6, 911
@@ -96,17 +50,7 @@ namespace SaMapViewer.Controllers
             if (string.IsNullOrWhiteSpace(dto?.Type)) return BadRequest();
 
             var creatorNick = string.IsNullOrWhiteSpace(dto?.CreatorNick) ? "system" : dto.CreatorNick;
-            Situation sit;
-            try
-            {
-                sit = await _situations.Create(dto.Type, dto.Metadata ?? new Dictionary<string, string>(), creatorNick);
-            }
-            catch (SqliteException ex) when (ex.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase)
-                                             && ex.Message.Contains("CreatorNick", StringComparison.OrdinalIgnoreCase))
-            {
-                EnsureSituationsSqliteCompatibility();
-                sit = await _situations.Create(dto.Type, dto.Metadata ?? new Dictionary<string, string>(), creatorNick);
-            }
+            var sit = await _situations.Create(dto.Type, dto.Metadata ?? new Dictionary<string, string>(), creatorNick);
 
             // If metadata contains a channel name, attach that channel to the newly created situation
             try
@@ -169,16 +113,7 @@ namespace SaMapViewer.Controllers
         [HttpGet("all")]
         public async Task<ActionResult<List<Situation>>> GetAll()
         {
-            try
-            {
-                return await _situations.GetAll();
-            }
-            catch (SqliteException ex) when (ex.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase)
-                                             && ex.Message.Contains("CreatorNick", StringComparison.OrdinalIgnoreCase))
-            {
-                EnsureSituationsSqliteCompatibility();
-                return await _situations.GetAll();
-            }
+            return await _situations.GetAll();
         }
 
         [HttpGet("{id}")]

@@ -13,6 +13,7 @@ namespace SaMapViewer.Data
         public DbSet<Unit> Units => Set<Unit>();
         public DbSet<Situation> Situations => Set<Situation>();
         public DbSet<TacticalChannel> TacticalChannels => Set<TacticalChannel>();
+        public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -81,6 +82,14 @@ namespace SaMapViewer.Data
                 builder.HasKey(c => c.Id);
                 builder.Property(c => c.Name).HasMaxLength(64);
                 builder.Property(c => c.Notes).HasMaxLength(1024);
+            });
+
+            // Audit log
+            modelBuilder.Entity<AuditLog>(builder =>
+            {
+                builder.HasKey(a => a.Id);
+                builder.Property(a => a.EventType).HasMaxLength(64);
+                builder.HasIndex(a => a.Timestamp);
             });
 
             base.OnModelCreating(modelBuilder);

@@ -8,14 +8,15 @@ import { Radio, Users, Activity, RefreshCw, Clock, Edit, Save, X, MessageSquare 
 import { TacticalChannelDto } from "@shared/api";
 import { cn } from "@/lib/utils";
 import { apiPut } from "@/lib/utils";
-import { useData } from "@/contexts/DataContext";
+import { useTacticalChannels } from "@/hooks/useDataQueries";
 
 interface TacticalChannelsProps {
   className?: string;
 }
 
 export function TacticalChannels({ className }: TacticalChannelsProps) {
-  const { tacticalChannels: channels, refreshTacticalChannels, situations } = useData();
+  const { data: channels, refetch } = useTacticalChannels();
+  const refreshTacticalChannels = () => refetch();
   const [isLoading, setIsLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null);

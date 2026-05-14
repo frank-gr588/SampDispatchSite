@@ -41,9 +41,9 @@ import {
   getPlayerStatusColor
 } from "@shared/api";
 import { emitAppEvent, apiGet, apiPost, apiPut, apiDelete } from "@/lib/utils";
-import type { PlayerRecord } from "./PlayersTable";
+import type { PlayerPointDto } from "@shared/api";
 import { MarkingSelector } from "./MarkingSelector";
-import { useData } from "@/contexts/DataContext";
+import { usePlayers, useUnits } from "@/hooks/useDataQueries";
 
 interface UnitsManagementProps {
   className?: string;
@@ -56,7 +56,9 @@ export function UnitsManagement({
   assignments = {}, 
   setAssignments 
 }: UnitsManagementProps) {
-  const { players, units: contextUnits, refreshUnits, refreshPlayers } = useData();
+  const { data: players } = usePlayers();
+  const { data: contextUnits, refetch: refreshUnits } = useUnits();
+  const { refetch: refreshPlayers } = usePlayers();
   const [units, setUnits] = useState<UnitDto[]>([]);
   const [availablePlayers, setAvailablePlayers] = useState<PlayerPointDto[]>([]);
   const [filteredUnits, setFilteredUnits] = useState<UnitDto[]>([]);

@@ -2,26 +2,37 @@ import "./global.css";
 
 import { Toaster } from "@/components/ui/toaster";
 import { createRoot } from "react-dom/client";
-import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
-import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import ErrorBoundary from "./components/ErrorBoundary";
-import { DataProvider } from "./contexts/DataContext";
+import Dashboard from "./pages/Dashboard";
+import MapView from "./pages/MapView";
+import BoardView from "./pages/BoardView";
+import ManagementView from "./pages/ManagementView";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: 1, refetchOnWindowFocus: true },
+  },
+});
 
-// Create a router and opt-in to React Router v7 future flags (silences the deprecation warnings)
 const router = createBrowserRouter(
   [
-    { path: "/", element: <Index />, errorElement: <ErrorBoundary /> },
-    // ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE
+    {
+      path: "/",
+      element: <Dashboard />,
+      errorElement: <ErrorBoundary />,
+      children: [
+        { index: true, element: <MapView /> },
+        { path: "board", element: <BoardView /> },
+        { path: "management", element: <ManagementView /> },
+      ],
+    },
     { path: "*", element: <NotFound />, errorElement: <ErrorBoundary /> },
   ],
   {
-    // Cast to any to avoid TypeScript type mismatch while still passing the runtime future flags
     future: ({
       v7_startTransition: true,
       v7_relativeSplatPath: true,
@@ -31,13 +42,10 @@ const router = createBrowserRouter(
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
-    <DataProvider>
-      <TooltipProvider>
-        <Toaster />
-        <Sonner />
-        <RouterProvider router={router} />
-      </TooltipProvider>
-    </DataProvider>
+    <TooltipProvider>
+      <Toaster />
+      <RouterProvider router={router} />
+    </TooltipProvider>
   </QueryClientProvider>
 );
 

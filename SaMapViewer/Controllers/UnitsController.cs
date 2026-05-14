@@ -97,47 +97,6 @@ namespace SaMapViewer.Controllers
         }
         public class ChannelDto { public Guid? ChannelId { get; set; } }
 
-        private void EnsureSqliteColumn(string tableName, string columnName, string columnDefinition)
-        {
-            var connection = _db.Database.GetDbConnection();
-            if (connection.State != System.Data.ConnectionState.Open)
-            {
-                connection.Open();
-            }
-
-            using var checkCmd = connection.CreateCommand();
-            checkCmd.CommandText = $"PRAGMA table_info(\"{tableName}\");";
-
-            var exists = false;
-            using (var reader = checkCmd.ExecuteReader())
-            {
-                while (reader.Read())
-                {
-                    var name = reader["name"]?.ToString();
-                    if (string.Equals(name, columnName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        exists = true;
-                        break;
-                    }
-                }
-            }
-
-            if (exists)
-                return;
-
-            using var alterCmd = connection.CreateCommand();
-            alterCmd.CommandText = $"ALTER TABLE \"{tableName}\" ADD COLUMN \"{columnName}\" {columnDefinition};";
-            alterCmd.ExecuteNonQuery();
-        }
-
-        private void EnsureUnitsSqliteCompatibility()
-        {
-            if (!_db.Database.IsSqlite())
-                return;
-
-            EnsureSqliteColumn("Units", "CreatorNick", "TEXT NOT NULL DEFAULT ''");
-        }
-
         [HttpPost]
         public async Task<ActionResult<Unit>> CreateUnit([FromBody] CreateUnitDto dto)
         {
@@ -150,15 +109,6 @@ namespace SaMapViewer.Controllers
 
             try
             {
-                var unit = await _units.CreateUnit(dto.Marking, dto.PlayerNicks, dto.IsLeadUnit, creatorNick);
-                await _hub.Clients.All.SendAsync("UnitCreated", unit);
-                _ = _history.AppendAsync(new { type = "unit_create", id = unit.Id, unit.Marking, playerNicks = unit.PlayerNicks, unit.IsLeadUnit, creatorNick });
-                return unit;
-            }
-            catch (SqliteException ex) when (ex.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase)
-                                             && ex.Message.Contains("CreatorNick", StringComparison.OrdinalIgnoreCase))
-            {
-                EnsureUnitsSqliteCompatibility();
                 var unit = await _units.CreateUnit(dto.Marking, dto.PlayerNicks, dto.IsLeadUnit, creatorNick);
                 await _hub.Clients.All.SendAsync("UnitCreated", unit);
                 _ = _history.AppendAsync(new { type = "unit_create", id = unit.Id, unit.Marking, playerNicks = unit.PlayerNicks, unit.IsLeadUnit, creatorNick });
@@ -196,20 +146,9 @@ namespace SaMapViewer.Controllers
         [HttpGet]
         public async Task<ActionResult<List<UnitWithCoordsDto>>> GetAllUnits()
         {
-            try
-            {
-                var units = await _units.GetAll();
-                var result = await Task.WhenAll(units.Select(ToUnitWithCoordsDto));
-                return Ok(result.ToList());
-            }
-            catch (SqliteException ex) when (ex.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase)
-                                             && ex.Message.Contains("CreatorNick", StringComparison.OrdinalIgnoreCase))
-            {
-                EnsureUnitsSqliteCompatibility();
-                var units = await _units.GetAll();
-                var result = await Task.WhenAll(units.Select(ToUnitWithCoordsDto));
-                return Ok(result.ToList());
-            }
+            var units = await _units.GetAll();
+            var result = await Task.WhenAll(units.Select(ToUnitWithCoordsDto));
+            return Ok(result.ToList());
         }
 
         [HttpGet("{id}")]

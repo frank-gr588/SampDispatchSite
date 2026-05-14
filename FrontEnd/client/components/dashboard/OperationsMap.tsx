@@ -3,29 +3,28 @@ import * as React from "react";
 import { Compass, MapPin, Grid3x3, Plus, Minus, RotateCcw, Maximize2, Minimize2, X, Radio, Users, AlertTriangle, CheckCircle, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useData } from "@/contexts/DataContext";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { PlayerRecord } from "./PlayersTable";
-import type { SituationRecord } from "./SituationsPanel";
-import type { UnitDto } from "@shared/api";
+import type { PlayerPointDto, UnitDto, SituationDto } from "@shared/api";
+import { useQueryClient } from "@tanstack/react-query";
+import { qk } from "@/hooks/useDataQueries";
 
 const saMap = '../../../sa_map.png';
 
 interface OperationsMapProps {
-  players: PlayerRecord[];
+  players: PlayerPointDto[];
   units: UnitDto[];
   assignments?: Record<string, string | null>;
-  situations?: SituationRecord[];
+  situations?: SituationDto[];
+  onAssignmentChange?: (unitId: string, situationId: string | null) => void;
 }
 
 const STATUS_MARKER_COLORS: Record<string, string> = {
@@ -113,8 +112,12 @@ const SITUATION_STATUS_LABELS: Record<string, string> = {
   Resolved: 'Решена',
 };
 
-export function OperationsMap({ players, units, assignments, situations }: OperationsMapProps) {
-  const { refreshSituations, refreshUnits } = useData();
+export function OperationsMap({ players, units, assignments, situations, onAssignmentChange }: OperationsMapProps) {
+  const qc = useQueryClient();
+  const invalidate = React.useCallback(() => {
+    qc.invalidateQueries({ queryKey: qk.units });
+    qc.invalidateQueries({ queryKey: qk.situations });
+  }, [qc]);
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const [dims, setDims] = React.useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -133,7 +136,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
   // Selected unit (911 Operator-style panel)
   const [selectedUnit, setSelectedUnit] = React.useState<UnitDto | null>(null);
   const [unitActionLoading, setUnitActionLoading] = React.useState(false);
-  const [selectedSituation, setSelectedSituation] = React.useState<SituationRecord | null>(null);
+  const [selectedSituation, setSelectedSituation] = React.useState<SituationDto | null>(null);
   const [situationActionLoading, setSituationActionLoading] = React.useState(false);
   const [isRelocatingSituation, setIsRelocatingSituation] = React.useState(false);
   const [situationForm, setSituationForm] = React.useState({
@@ -144,9 +147,9 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
     status: 'Active',
   });
 
-  const resolveBackendSituationId = React.useCallback((s: SituationRecord) => String(s.backendId ?? s.id), []);
+  const resolveBackendSituationId = React.useCallback((s: SituationDto) => String(s.id), []);
 
-  const openSituationPanel = React.useCallback((s: SituationRecord) => {
+  const openSituationPanel = React.useCallback((s: SituationDto) => {
     setSelectedUnit(null);
     setSelectedSituation(s);
     setSituationForm({
@@ -189,7 +192,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
     setUnitActionLoading(true);
     try {
       await apiPut(`/api/units/${unit.id}/status`, { status });
-      await refreshUnits(true);
+      await invalidate();
     } catch (e) {
       console.error('changeUnitStatus', e);
     } finally {
@@ -201,8 +204,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
     setUnitActionLoading(true);
     try {
       await apiPost(`/api/situations/${situationId}/units/add`, { UnitId: unit.id, AsLeadUnit: unit.isLeadUnit });
-      await refreshUnits(true);
-      await refreshSituations(true);
+      await invalidate();
     } catch (e) {
       console.error('assignUnitToSituation', e);
     } finally {
@@ -214,7 +216,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
     setUnitActionLoading(true);
     try {
       await apiPut(`/api/units/${unit.id}/situation`, { situationId: null });
-      await refreshUnits(true);
+      await invalidate();
       await refreshSituations(true);
     } catch (e) {
       console.error('detachUnitFromSituation', e);
@@ -223,7 +225,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
     }
   };
 
-  const saveSituationMetadata = async (s: SituationRecord) => {
+  const saveSituationMetadata = async (s: SituationDto) => {
     const situationId = resolveBackendSituationId(s);
     setSituationActionLoading(true);
     try {
@@ -244,7 +246,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
     }
   };
 
-  const setSituationStatus = async (s: SituationRecord, status: string) => {
+  const setSituationStatus = async (s: SituationDto, status: string) => {
     const situationId = resolveBackendSituationId(s);
     setSituationActionLoading(true);
     try {
@@ -264,7 +266,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
     }
   };
 
-  const relocateSituation = async (s: SituationRecord, x: number, y: number) => {
+  const relocateSituation = async (s: SituationDto, x: number, y: number) => {
     const situationId = resolveBackendSituationId(s);
     setSituationActionLoading(true);
     try {
@@ -291,7 +293,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
     }
   };
 
-  const addUnitToSituation = async (s: SituationRecord, unit: UnitDto) => {
+  const addUnitToSituation = async (s: SituationDto, unit: UnitDto) => {
     const situationId = resolveBackendSituationId(s);
     setSituationActionLoading(true);
     try {
@@ -305,7 +307,7 @@ export function OperationsMap({ players, units, assignments, situations }: Opera
     }
   };
 
-  const removeUnitFromSituation = async (s: SituationRecord, unit: UnitDto) => {
+  const removeUnitFromSituation = async (s: SituationDto, unit: UnitDto) => {
     const situationId = resolveBackendSituationId(s);
     setSituationActionLoading(true);
     try {

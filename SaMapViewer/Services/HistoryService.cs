@@ -1,41 +1,30 @@
 using System;
-using System.IO;
 using System.Text.Json;
-using System.Threading;
-using Microsoft.Extensions.Options;
+using System.Threading.Tasks;
+using SaMapViewer.Data;
+using SaMapViewer.Models;
 
 namespace SaMapViewer.Services
 {
-    public class SaOptions
-    {
-        public string ApiKey { get; set; } = string.Empty;
-        public int PlayerTtlSeconds { get; set; } = 10;
-        public string HistoryPath { get; set; } = "history.jsonl";
-        public string DatabasePath { get; set; } = "samap.db";
-    }
-
     public class HistoryService
     {
-        private readonly string _path;
-        private readonly SemaphoreSlim _sem = new(1,1);
+        private readonly SaMapDbContext _db;
 
-        public HistoryService(IOptions<SaOptions> options)
+        public HistoryService(SaMapDbContext db)
         {
-            _path = options.Value.HistoryPath ?? "history.jsonl";
+            _db = db;
         }
 
-        public async System.Threading.Tasks.Task AppendAsync(object evt)
+        public async Task AppendAsync(object evt)
         {
-            await _sem.WaitAsync();
-            try
+            var entry = new AuditLog
             {
-                var json = JsonSerializer.Serialize(new { ts = DateTime.UtcNow, ev = evt });
-                await File.AppendAllTextAsync(_path, json + Environment.NewLine);
-            }
-            finally
-            {
-                _sem.Release();
-            }
+                Timestamp = DateTime.UtcNow,
+                EventType = (evt as dynamic)?.type?.ToString() ?? "generic",
+                Payload = JsonSerializer.Serialize(evt)
+            };
+            _db.AuditLogs.Add(entry);
+            await _db.SaveChangesAsync();
         }
     }
 }

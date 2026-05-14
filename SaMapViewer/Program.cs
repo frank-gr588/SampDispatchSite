@@ -1,6 +1,5 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -8,14 +7,13 @@ using Microsoft.Extensions.Options;
 using SaMapViewer.Data;
 using SaMapViewer.Services;
 using System.IO;
-using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
-        options.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+        options.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
     });
 builder.Services.AddSignalR();
 builder.Services.AddDbContext<SaMapDbContext>((sp, opts) =>
@@ -28,14 +26,10 @@ builder.Services.AddDbContext<SaMapDbContext>((sp, opts) =>
 
     var dbDir = Path.GetDirectoryName(dbPath);
     if (!string.IsNullOrWhiteSpace(dbDir))
-    {
         Directory.CreateDirectory(dbDir);
-    }
 
     if (!File.Exists(dbPath))
-    {
         using var _ = File.Create(dbPath);
-    }
 
     opts.UseSqlite($"Data Source={dbPath}");
 });
@@ -44,8 +38,9 @@ builder.Services.AddScoped<UnitsService>();
 builder.Services.AddScoped<SituationsService>();
 builder.Services.AddScoped<HistoryService>();
 builder.Services.AddScoped<TacticalChannelsService>();
+builder.Services.AddScoped<DatabaseMigrator>();
 builder.Services.Configure<SaOptions>(builder.Configuration.GetSection("SaMap"));
-builder.Services.AddHostedService<SaMapViewer.Services.InactivityCleanupService>();
+builder.Services.AddHostedService<InactivityCleanupService>();
 
 builder.Services.AddCors(options =>
 {
@@ -59,62 +54,14 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-static void EnsureSqliteColumn(SaMapDbContext db, string tableName, string columnName, string columnDefinition)
-{
-    var connection = db.Database.GetDbConnection();
-    if (connection.State != System.Data.ConnectionState.Open)
-    {
-        connection.Open();
-    }
-
-    using var checkCmd = connection.CreateCommand();
-    checkCmd.CommandText = $"PRAGMA table_info(\"{tableName}\");";
-
-    var exists = false;
-    using (var reader = checkCmd.ExecuteReader())
-    {
-        while (reader.Read())
-        {
-            var name = reader["name"]?.ToString();
-            if (string.Equals(name, columnName, StringComparison.OrdinalIgnoreCase))
-            {
-                exists = true;
-                break;
-            }
-        }
-    }
-
-    if (exists)
-    {
-        return;
-    }
-
-    using var alterCmd = connection.CreateCommand();
-    alterCmd.CommandText = $"ALTER TABLE \"{tableName}\" ADD COLUMN \"{columnName}\" {columnDefinition};";
-    alterCmd.ExecuteNonQuery();
-}
-
-// Ensure database is created
+// Run migrations and seed defaults
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<SaMapDbContext>();
-    db.Database.EnsureCreated();
-
-    if (db.Database.IsSqlite())
-    {
-        EnsureSqliteColumn(db, "Situations", "CreatorNick", "TEXT NOT NULL DEFAULT ''");
-        EnsureSqliteColumn(db, "Situations", "GreenUnitId", "TEXT NULL");
-        EnsureSqliteColumn(db, "Situations", "RedUnitId", "TEXT NULL");
-        EnsureSqliteColumn(db, "Situations", "LocationName", "TEXT NOT NULL DEFAULT ''");
-        EnsureSqliteColumn(db, "Situations", "X", "REAL NULL");
-        EnsureSqliteColumn(db, "Situations", "Y", "REAL NULL");
-        EnsureSqliteColumn(db, "Situations", "LastActivityAt", "TEXT NULL");
-        EnsureSqliteColumn(db, "Units", "CreatorNick", "TEXT NOT NULL DEFAULT ''");
-        EnsureSqliteColumn(db, "Players", "IsSuspect", "INTEGER NOT NULL DEFAULT 0");
-    }
+    var migrator = scope.ServiceProvider.GetRequiredService<DatabaseMigrator>();
+    await migrator.RunAsync();
 
     var channels = scope.ServiceProvider.GetRequiredService<TacticalChannelsService>();
-    channels.EnsureDefaultsAsync().GetAwaiter().GetResult();
+    await channels.EnsureDefaultsAsync();
 }
 
 app.UseCors();
@@ -129,7 +76,6 @@ app.Use(async (ctx, next) =>
             return;
         }
     }
-
     await next();
 });
 app.UseStaticFiles();
