@@ -10,7 +10,9 @@ export function cn(...inputs: ClassValue[]) {
 // Default to localhost:5000 when VITE_API_BASE is not provided to make
 // local development easier (matches README). Explicit VITE_API_BASE will
 // still override this value in CI/hosting environments.
-export const API_BASE: string = (import.meta as any).env?.VITE_API_BASE ?? "http://localhost:5000";
+export const API_BASE: string = (import.meta as any).env?.VITE_API_BASE ?? "";
+// API key is required by the backend middleware; allow override via env with a safe fallback
+export const API_KEY: string | undefined = (import.meta as any).env?.VITE_API_KEY ?? "changeme-key";
 
 async function readResponseBodySafely(res: Response) {
   try {
@@ -21,8 +23,30 @@ async function readResponseBodySafely(res: Response) {
   }
 }
 
+function mergeHeaders(userHeaders?: HeadersInit): HeadersInit {
+  const base = new Headers();
+  if (API_KEY) {
+    base.set("x-api-key", API_KEY);
+  }
+  if (userHeaders) {
+    const h = new Headers(userHeaders as any);
+    h.forEach((value, key) => base.set(key, value));
+  }
+  return base;
+}
+
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const headers = mergeHeaders(init?.headers);
+  const response = await fetch(`${API_BASE}${path}`, {
+    cache: "no-store",
+    ...init,
+    headers,
+  });
+  return response;
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { cache: 'no-store' });
+  const res = await apiFetch(path, { method: "GET" });
   if (!res.ok) {
     const body = await readResponseBodySafely(res);
     throw new Error(`GET ${path} ${res.status} - ${body}`);
@@ -30,20 +54,51 @@ export async function apiGet<T>(path: string): Promise<T> {
   return res.json();
 }
 
-export async function apiPost<T>(path: string, body?: any, apiKey?: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+export async function apiPost<T>(path: string, body?: any): Promise<T> {
+  const res = await apiFetch(path, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(apiKey ? { "x-api-key": apiKey } : {}),
-    },
+    headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
     const text = await readResponseBodySafely(res);
     throw new Error(`POST ${path} ${res.status} - ${text}`);
   }
-  return res.status === 204 ? (undefined as unknown as T) : res.json();
+  if (res.status === 204) return undefined as unknown as T;
+  
+  const text = await res.text();
+  if (!text) return undefined as unknown as T;
+  return JSON.parse(text);
+}
+
+export async function apiPut<T>(path: string, body?: any): Promise<T> {
+  const res = await apiFetch(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await readResponseBodySafely(res);
+    throw new Error(`PUT ${path} ${res.status} - ${text}`);
+  }
+  if (res.status === 204) return undefined as unknown as T;
+  
+  const text = await res.text();
+  if (!text) return undefined as unknown as T;
+  return JSON.parse(text);
+}
+
+export async function apiDelete<T>(path: string): Promise<T> {
+  const res = await apiFetch(path, { method: "DELETE" });
+  if (!res.ok) {
+    const text = await readResponseBodySafely(res);
+    throw new Error(`DELETE ${path} ${res.status} - ${text}`);
+  }
+  if (res.status === 204) return undefined as unknown as T;
+  
+  const text = await res.text();
+  if (!text) return undefined as unknown as T;
+  return JSON.parse(text);
 }
 
 // Simple in-browser event helpers for app-level refresh notifications

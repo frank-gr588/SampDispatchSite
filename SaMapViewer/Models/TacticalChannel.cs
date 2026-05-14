@@ -8,6 +8,7 @@ namespace SaMapViewer.Models
         public string Name { get; set; } = string.Empty;
         public bool IsBusy { get; set; }
         public Guid? SituationId { get; set; } // Привязанная ситуация
+        public string Notes { get; set; } = string.Empty; // Дополнительные заметки / описание
     }
 }
 

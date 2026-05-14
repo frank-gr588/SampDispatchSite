@@ -1,20 +1,26 @@
-using SaMapViewer.Models;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using SaMapViewer.Data;
+using SaMapViewer.Models;
 
 namespace SaMapViewer.Services
 {
     public class PlayerTrackerService
     {
-        private readonly ConcurrentDictionary<string, PlayerPoint> _players = new();
+        private readonly SaMapDbContext _db;
         private readonly TimeSpan _timeout;
         private readonly ILogger<PlayerTrackerService> _logger;
 
-        public PlayerTrackerService(Microsoft.Extensions.Options.IOptions<SaMapViewer.Services.SaOptions> options, ILogger<PlayerTrackerService> logger)
+        public PlayerTrackerService(
+            SaMapDbContext db,
+            Microsoft.Extensions.Options.IOptions<SaOptions> options,
+            ILogger<PlayerTrackerService> logger)
         {
+            _db = db;
             var seconds = Math.Max(1, options.Value.PlayerTtlSeconds);
             _timeout = TimeSpan.FromSeconds(seconds);
             _logger = logger;
@@ -23,42 +29,40 @@ namespace SaMapViewer.Services
 
         // Устаревший метод для совместимости с Lua скриптом
         // Устаревший метод для совместимости с Lua скриптом
-        public void Update(string nick, float x, float y)
-        {
-            UpdatePlayer(nick, x, y, true);
-        }
+        public Task Update(string nick, float x, float y) => UpdatePlayer(nick, x, y, true);
 
-        public void UpdatePlayer(string nick, float x, float y, bool inVehicle = true)
+        public async Task UpdatePlayer(string nick, float x, float y, bool inVehicle = true)
         {
             _logger.LogDebug("Updating player coordinates: {Nick} at ({X}, {Y}) inVehicle={InVehicle}", nick, x, y, inVehicle);
-            
-            _players.AddOrUpdate(nick,
-                _ => {
-                    _logger.LogInformation("Creating new player from script: {Nick} at ({X}, {Y})", nick, x, y);
-                    var p = new PlayerPoint(nick, x, y);
-                    p.InVehicle = inVehicle;
-                    return p;
-                },
-                (_, existing) =>
+
+            var player = await _db.Players.FindAsync(nick);
+            if (player == null)
+            {
+                _logger.LogInformation("Creating new player from script: {Nick} at ({X}, {Y})", nick, x, y);
+                player = new PlayerPoint(nick, x, y) { InVehicle = inVehicle };
+                _db.Players.Add(player);
+            }
+            else
+            {
+                _logger.LogDebug("Updating existing player: {Nick} from ({OldX}, {OldY}) to ({NewX}, {NewY}) inVehicle={InVehicle}",
+                    nick, player.X, player.Y, x, y, inVehicle);
+
+                if (!inVehicle)
                 {
-                    _logger.LogDebug("Updating existing player: {Nick} from ({OldX}, {OldY}) to ({NewX}, {NewY}) inVehicle={InVehicle}", 
-                        nick, existing.X, existing.Y, x, y, inVehicle);
+                    player.SetInVehicle(false);
+                }
+                else
+                {
+                    player.SetInVehicle(true);
+                    player.Update(x, y);
+                }
+            }
 
-                    if (!inVehicle)
-                    {
-                        // If the player is not in vehicle, we should not overwrite coordinates; just mark InVehicle=false and keep last known marker
-                        existing.SetInVehicle(false);
-                        return existing;
-                    }
-
-                    existing.SetInVehicle(true);
-                    existing.Update(x, y);
-                    return existing;
-                });
+            await _db.SaveChangesAsync();
         }
 
         // Устаревший метод для совместимости с Lua скриптом
-        public void SetStatus(string nick, string status)
+        public async Task SetStatus(string nick, string status)
         {
             // Конвертация старых строковых статусов в новые enum
             var playerStatus = status.ToLower() switch
@@ -69,150 +73,143 @@ namespace SaMapViewer.Services
                 _ => PlayerStatus.OnDuty
             };
 
-            SetPlayerStatus(nick, playerStatus);
+            await SetPlayerStatus(nick, playerStatus);
         }
 
-        public void SetPlayerStatus(string nick, PlayerStatus status)
+        public async Task SetPlayerStatus(string nick, PlayerStatus status)
         {
-            _players.AddOrUpdate(nick,
-                _ =>
-                {
-                    // ВАЖНО: если игрока нет в словаре, логируем предупреждение
-                    // SetPlayerStatus должен вызываться только на существующих игроках!
-                    _logger.LogWarning("SetPlayerStatus called on non-existent player: {Nick} - creating with manual coordinates", nick);
-                    var p = new PlayerPoint(nick, -10000f, -10000f); // Создаем с "manual" координатами
-                    p.SetStatus(status);
-                    return p;
-                },
-                (_, existing) =>
-                {
-                    _logger.LogDebug("Setting player status: {Nick} from {OldStatus} to {NewStatus}", nick, existing.Status, status);
-                    existing.SetStatus(status);
-                    return existing;
-                });
+            var player = await _db.Players.FindAsync(nick);
+            if (player == null)
+            {
+                _logger.LogWarning("SetPlayerStatus called on non-existent player: {Nick} - creating with manual coordinates", nick);
+                player = new PlayerPoint(nick, -10000f, -10000f);
+                _db.Players.Add(player);
+            }
+
+            _logger.LogDebug("Setting player status: {Nick} from {OldStatus} to {NewStatus}", nick, player.Status, status);
+            player.SetStatus(status);
+            await _db.SaveChangesAsync();
         }
 
-        public PlayerPoint? GetPlayer(string nick)
-        {
-            _players.TryGetValue(nick, out var player);
-            return player;
-        }
+        public Task<PlayerPoint?> GetPlayer(string nick) => _db.Players.AsNoTracking().FirstOrDefaultAsync(p => p.Nick == nick);
 
-        public List<PlayerPoint> GetAllPlayers()
-        {
-            return _players.Values.ToList();
-        }
+        public Task<List<PlayerPoint>> GetAllPlayers() => _db.Players.AsNoTracking().ToListAsync();
 
-        public List<PlayerPoint> GetAlivePlayers()
+        public async Task<List<PlayerPoint>> GetAlivePlayers()
         {
             var now = DateTime.UtcNow;
-            var alivePlayers = _players.Values
-                .Where(p => 
-                    // Игроки созданные вручную (координаты -10000, -10000) всегда считаются "живыми"
-                    (p.X == -10000f && p.Y == -10000f) || 
-                    // Или игроки которые обновлялись недавно
-                    (now - p.LastUpdate < _timeout)
-                )
-                .ToList();
+            var alivePlayers = await _db.Players
+                .AsNoTracking()
+                .Where(p => (p.X == -10000f && p.Y == -10000f) || (now - p.LastUpdate < _timeout))
+                .ToListAsync();
 
-            _logger.LogDebug("GetAlivePlayers: {TotalPlayers} total, {AlivePlayers} alive (timeout: {Timeout}s)", 
-                _players.Count, alivePlayers.Count, _timeout.TotalSeconds);
-                
+            var total = await _db.Players.CountAsync();
+            _logger.LogDebug("GetAlivePlayers: {TotalPlayers} total, {AlivePlayers} alive (timeout: {Timeout}s)", total, alivePlayers.Count, _timeout.TotalSeconds);
             return alivePlayers;
         }
 
-        public void RemovePlayer(string nick)
+        public async Task RemovePlayer(string nick)
         {
-            if (_players.TryRemove(nick, out var removedPlayer))
-            {
-                _logger.LogInformation("Removed player: {Nick} (was at {X}, {Y})", nick, removedPlayer.X, removedPlayer.Y);
-            }
-            else
+            var player = await _db.Players.FindAsync(nick);
+            if (player == null)
             {
                 _logger.LogWarning("Attempted to remove non-existent player: {Nick}", nick);
+                return;
             }
+
+            _db.Players.Remove(player);
+            await _db.SaveChangesAsync();
+            _logger.LogInformation("Removed player: {Nick} (was at {X}, {Y})", nick, player.X, player.Y);
         }
 
-        public void AddPlayer(PlayerPoint player)
+        public async Task AddPlayer(PlayerPoint player)
         {
             _logger.LogInformation("Adding player manually: {Nick} at ({X}, {Y}) with status {Status} and role {Role}", 
                 player.Nick, player.X, player.Y, player.Status, player.Role);
-            
-            _players.AddOrUpdate(player.Nick, player, (_, existing) => {
-                _logger.LogInformation("Replacing existing player: {Nick}", player.Nick);
-                return player;
-            });
-        }
 
-        public List<PlayerPoint> GetPlayersByStatus(PlayerStatus status)
-        {
-            return _players.Values
-                .Where(p => p.Status == status)
-                .ToList();
-        }
-
-        public List<PlayerPoint> GetPlayersByRole(PlayerRole role)
-        {
-            return _players.Values
-                .Where(p => p.Role == role)
-                .ToList();
-        }
-
-        public void SetPlayerAFK(string nick, bool isAFK)
-        {
-            if (_players.TryGetValue(nick, out var player))
+            var existing = await _db.Players.FindAsync(player.Nick);
+            if (existing == null)
             {
-                player.IsAFK = isAFK;
-                player.LastUpdate = DateTime.UtcNow;
-                _logger.LogInformation("Player {Nick} AFK status set to: {IsAFK}", nick, isAFK);
+                _db.Players.Add(player);
             }
             else
             {
-                _logger.LogWarning("Attempted to set AFK status for non-existent player: {Nick}", nick);
+                _db.Entry(existing).CurrentValues.SetValues(player);
             }
+
+            await _db.SaveChangesAsync();
         }
 
-        public List<PlayerPoint> GetAvailablePlayersForUnit()
+        public Task<List<PlayerPoint>> GetPlayersByStatus(PlayerStatus status) =>
+            _db.Players.AsNoTracking().Where(p => p.Status == status).ToListAsync();
+
+        public Task<List<PlayerPoint>> GetPlayersByRole(PlayerRole role) =>
+            _db.Players.AsNoTracking().Where(p => p.Role == role).ToListAsync();
+
+        public async Task SetPlayerAFK(string nick, bool isAFK)
         {
-            var availablePlayers = GetAlivePlayers() // Используем GetAlivePlayers чтобы включить созданных вручную
-                .Where(p => p.Status == PlayerStatus.OnDutyOutOfUnit || p.Status == PlayerStatus.OnDuty)
-                .Where(p => !p.UnitId.HasValue)
+            var player = await _db.Players.FindAsync(nick);
+            if (player == null)
+            {
+                _logger.LogWarning("Attempted to set AFK status for non-existent player: {Nick}", nick);
+                return;
+            }
+
+            player.IsAFK = isAFK;
+            player.LastUpdate = DateTime.UtcNow;
+            await _db.SaveChangesAsync();
+            _logger.LogInformation("Player {Nick} AFK status set to: {IsAFK}", nick, isAFK);
+        }
+
+        public async Task<List<PlayerPoint>> GetAvailablePlayersForUnit()
+        {
+            var now = DateTime.UtcNow;
+            var timeout = _timeout;
+            var onDutyOutOfUnit = PlayerStatus.OnDutyOutOfUnit;
+            var onDuty = PlayerStatus.OnDuty;
+            
+            // Fetch all players and filter in memory (SQLite doesn't support complex LINQ translations)
+            var allPlayers = await _db.Players
+                .AsNoTracking()
+                .ToListAsync();
+            
+            var availablePlayers = allPlayers
+                .Where(p =>
+                    ((p.X == -10000f && p.Y == -10000f) || (now - p.LastUpdate < timeout)) &&
+                    (p.Status == onDutyOutOfUnit || p.Status == onDuty) &&
+                    !p.UnitId.HasValue)
                 .ToList();
 
             _logger.LogDebug("GetAvailablePlayersForUnit: {Count} players available for units", availablePlayers.Count);
-            foreach (var player in availablePlayers)
-            {
-                _logger.LogDebug("Available player: {Nick} (Status: {Status}, Role: {Role}, Manual: {IsManual})", 
-                    player.Nick, player.Status, player.Role, player.X == -10000f && player.Y == -10000f);
-            }
-            
             return availablePlayers;
         }
 
-        public void AssignPlayerToUnit(string nick, Guid unitId)
+        public async Task AssignPlayerToUnit(string nick, Guid unitId)
         {
-            if (_players.TryGetValue(nick, out var player))
-            {
-                _logger.LogInformation("Assigning player {Nick} to unit {UnitId}", nick, unitId);
-                player.AssignToUnit(unitId);
-            }
-            else
+            var player = await _db.Players.FindAsync(nick);
+            if (player == null)
             {
                 _logger.LogWarning("Cannot assign player {Nick} to unit {UnitId} - player not found", nick, unitId);
+                return;
             }
+
+            _logger.LogInformation("Assigning player {Nick} to unit {UnitId}", nick, unitId);
+            player.AssignToUnit(unitId);
+            await _db.SaveChangesAsync();
         }
 
-        public void RemovePlayerFromUnit(string nick)
+        public async Task RemovePlayerFromUnit(string nick)
         {
-            if (_players.TryGetValue(nick, out var player))
-            {
-                _logger.LogInformation("Removing player {Nick} from unit {UnitId}", nick, player.UnitId);
-                player.RemoveFromUnit();
-            }
-            else
+            var player = await _db.Players.FindAsync(nick);
+            if (player == null)
             {
                 _logger.LogWarning("Cannot remove player {Nick} from unit - player not found", nick);
+                return;
             }
+
+            _logger.LogInformation("Removing player {Nick} from unit {UnitId}", nick, player.UnitId);
+            player.RemoveFromUnit();
+            await _db.SaveChangesAsync();
         }
     }
 }

@@ -1,22 +1,28 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using SaMapViewer.Data;
 using SaMapViewer.Models;
 
 namespace SaMapViewer.Services
 {
     public class UnitsService
     {
-        private readonly ConcurrentDictionary<Guid, Unit> _units = new();
+        private readonly SaMapDbContext _db;
         private readonly PlayerTrackerService _playerTracker;
+        private readonly ILogger<UnitsService> _logger;
 
-        public UnitsService(PlayerTrackerService playerTracker)
+        public UnitsService(SaMapDbContext db, PlayerTrackerService playerTracker, ILogger<UnitsService> logger)
         {
+            _db = db;
             _playerTracker = playerTracker;
+            _logger = logger;
         }
 
-        public Unit CreateUnit(string marking, List<string> playerNicks, bool isLeadUnit = false)
+        public async Task<Unit> CreateUnit(string marking, List<string> playerNicks, bool isLeadUnit = false, string creatorNick = "")
         {
             // Валидация маркировки
             if (string.IsNullOrWhiteSpace(marking) || marking.Length > 8)
@@ -25,7 +31,7 @@ namespace SaMapViewer.Services
             // Проверяем, что все игроки доступны для создания юнита
             foreach (var nick in playerNicks)
             {
-                var player = _playerTracker.GetPlayer(nick);
+                var player = await _playerTracker.GetPlayer(nick);
                 if (player == null)
                     throw new ArgumentException($"Player '{nick}' not found");
 
@@ -37,72 +43,75 @@ namespace SaMapViewer.Services
             {
                 Marking = marking,
                 PlayerNicks = new HashSet<string>(playerNicks, StringComparer.OrdinalIgnoreCase),
-                IsLeadUnit = isLeadUnit
+                IsLeadUnit = isLeadUnit,
+                CreatorNick = creatorNick
             };
 
-            _units[unit.Id] = unit;
+            _db.Units.Add(unit);
 
             // Назначаем игроков в юнит
             // If the unit is marked as a lead unit, mark only the first player as the lead player.
             for (int i = 0; i < playerNicks.Count; i++)
             {
                 var nick = playerNicks[i];
-                var player = _playerTracker.GetPlayer(nick);
+                var player = await _playerTracker.GetPlayer(nick);
                 if (player != null)
                 {
                     if (isLeadUnit && i == 0)
                     {
-                        _playerTracker.SetPlayerStatus(nick, PlayerStatus.OnDutyLeadUnit);
+                        await _playerTracker.SetPlayerStatus(nick, PlayerStatus.OnDutyLeadUnit);
                         unit.IsLeadUnit = true;
                     }
                     else
                     {
-                        _playerTracker.SetPlayerStatus(nick, PlayerStatus.OnDuty);
+                        await _playerTracker.SetPlayerStatus(nick, PlayerStatus.OnDuty);
                     }
 
-                    _playerTracker.AssignPlayerToUnit(nick, unit.Id);
+                    await _playerTracker.AssignPlayerToUnit(nick, unit.Id);
                 }
             }
+
+            await _db.SaveChangesAsync();
 
             return unit;
         }
 
-        public Unit CreateUnitFromSinglePlayer(string marking, string playerNick, bool isLeadUnit = false)
+        public Task<Unit> CreateUnitFromSinglePlayer(string marking, string playerNick, bool isLeadUnit = false)
         {
             return CreateUnit(marking, new List<string> { playerNick }, isLeadUnit);
         }
 
-        public Unit? GetUnit(Guid id)
+        public Task<Unit?> GetUnit(Guid id) => _db.Units.FindAsync(id).AsTask();
+
+        public async Task<(bool, Unit?)> TryGet(Guid id)
         {
-            _units.TryGetValue(id, out var unit);
-            return unit;
+            var unit = await _db.Units.FindAsync(id);
+            return (unit != null, unit);
         }
 
-        public bool TryGet(Guid id, out Unit? unit) => _units.TryGetValue(id, out unit);
+        public Task<List<Unit>> GetAll() => _db.Units.AsNoTracking().OrderBy(u => u.Marking).ToListAsync();
 
-        public List<Unit> GetAll() => _units.Values.OrderBy(u => u.Marking).ToList();
-
-        public void RemoveUnit(Guid id)
+        public async Task RemoveUnit(Guid id)
         {
-            if (_units.TryGetValue(id, out var unit))
+            var unit = await _db.Units.FindAsync(id);
+            if (unit == null) return;
+
+            foreach (var nick in unit.PlayerNicks.ToList())
             {
-                // Освобождаем всех игроков из юнита
-                foreach (var nick in unit.PlayerNicks.ToList())
-                {
-                    _playerTracker.RemovePlayerFromUnit(nick);
-                }
-
-                _units.TryRemove(id, out _);
+                await _playerTracker.RemovePlayerFromUnit(nick);
             }
+
+            _db.Units.Remove(unit);
+            await _db.SaveChangesAsync();
         }
 
-        public void AddPlayerToUnit(Guid unitId, string playerNick)
+        public async Task AddPlayerToUnit(Guid unitId, string playerNick)
         {
-            var unit = GetUnit(unitId);
+            var unit = await GetUnit(unitId);
             if (unit == null)
                 throw new ArgumentException($"Unit {unitId} not found");
 
-            var player = _playerTracker.GetPlayer(playerNick);
+            var player = await _playerTracker.GetPlayer(playerNick);
             if (player == null)
                 throw new ArgumentException($"Player '{playerNick}' not found");
 
@@ -113,63 +122,63 @@ namespace SaMapViewer.Services
             unit.PlayerNicks.Add(playerNick);
 
             // Determine if there is already a lead player in the unit (player with OnDutyLeadUnit status)
-            bool hasLeadPlayer = unit.PlayerNicks.Any(n =>
-            {
-                var p = _playerTracker.GetPlayer(n);
-                return p != null && p.Status == PlayerStatus.OnDutyLeadUnit;
-            });
+            var unitPlayers = await _db.Players.Where(p => unit.PlayerNicks.Contains(p.Nick)).ToListAsync();
+            bool hasLeadPlayer = unitPlayers.Any(p => p.Status == PlayerStatus.OnDutyLeadUnit);
 
             // If unit is configured as a lead unit and there is no lead yet, make this new player the lead; otherwise set as normal OnDuty
             if (unit.IsLeadUnit && !hasLeadPlayer)
             {
-                _playerTracker.SetPlayerStatus(playerNick, PlayerStatus.OnDutyLeadUnit);
+                await _playerTracker.SetPlayerStatus(playerNick, PlayerStatus.OnDutyLeadUnit);
             }
             else
             {
-                _playerTracker.SetPlayerStatus(playerNick, PlayerStatus.OnDuty);
+                await _playerTracker.SetPlayerStatus(playerNick, PlayerStatus.OnDuty);
             }
 
-            _playerTracker.AssignPlayerToUnit(playerNick, unitId);
+            await _playerTracker.AssignPlayerToUnit(playerNick, unitId);
+            _db.Units.Update(unit);
+            await _db.SaveChangesAsync();
         }
 
-        public void RemovePlayerFromUnit(Guid unitId, string playerNick)
+        public async Task RemovePlayerFromUnit(Guid unitId, string playerNick)
         {
-            var unit = GetUnit(unitId);
+            var unit = await GetUnit(unitId);
             if (unit == null)
                 return;
             if (unit.PlayerNicks.Remove(playerNick))
             {
-                _playerTracker.RemovePlayerFromUnit(playerNick);
+                await _playerTracker.RemovePlayerFromUnit(playerNick);
 
                 // Если юнит стал пустым, удаляем его
                 if (unit.PlayerNicks.Count == 0)
                 {
-                    RemoveUnit(unitId);
+                    await RemoveUnit(unitId);
                 }
                 else
                 {
                     // Если после удаления в юните не осталось игрока со статусом OnDutyLeadUnit, сбрасываем флаг ведущего и обновляем статусы
-                    bool hasLead = unit.PlayerNicks.Any(nick =>
-                    {
-                        var p = _playerTracker.GetPlayer(nick);
-                        return p != null && p.Status == PlayerStatus.OnDutyLeadUnit;
-                    });
+                    var remaining = await _db.Players.Where(p => unit.PlayerNicks.Contains(p.Nick)).ToListAsync();
+                    bool hasLead = remaining.Any(p => p.Status == PlayerStatus.OnDutyLeadUnit);
 
                     if (!hasLead && unit.IsLeadUnit)
                     {
                         unit.IsLeadUnit = false;
                         foreach (var nick in unit.PlayerNicks)
                         {
-                            _playerTracker.SetPlayerStatus(nick, PlayerStatus.OnDuty);
+                            await _playerTracker.SetPlayerStatus(nick, PlayerStatus.OnDuty);
                         }
                     }
                 }
+
+                _db.Units.Update(unit);
+                await _db.SaveChangesAsync();
             }
         }
 
-        public void UpdateUnit(Guid id, string? marking = null)
+        public async Task UpdateUnit(Guid id, string? marking = null)
         {
-            if (_units.TryGetValue(id, out var unit))
+            var unit = await _db.Units.FindAsync(id);
+            if (unit != null)
             {
                 if (marking != null)
                 {
@@ -177,39 +186,46 @@ namespace SaMapViewer.Services
                         throw new ArgumentException("Marking must be max 8 characters");
                     unit.Marking = marking;
                 }
+
+                _db.Units.Update(unit);
+                await _db.SaveChangesAsync();
             }
         }
 
-        public void SetUnitStatus(Guid id, string status)
+        public async Task SetUnitStatus(Guid id, string status)
         {
-            if (_units.TryGetValue(id, out var unit))
+            var unit = await _db.Units.FindAsync(id);
+            if (unit != null)
             {
                 unit.Status = status ?? string.Empty;
+                _db.Units.Update(unit);
+                await _db.SaveChangesAsync();
             }
         }
 
-        public void AttachToSituation(Guid id, Guid? situationId)
+        public async Task AttachToSituation(Guid id, Guid? situationId)
         {
-            if (_units.TryGetValue(id, out var unit))
+            var unit = await _db.Units.FindAsync(id);
+            if (unit != null)
             {
                 unit.SituationId = situationId;
+                _db.Units.Update(unit);
+                await _db.SaveChangesAsync();
             }
         }
 
-        public void SetLeadUnit(Guid id, bool isLeadUnit)
+        public async Task SetLeadUnit(Guid id, bool isLeadUnit)
         {
-            if (_units.TryGetValue(id, out var unit))
+            var unit = await _db.Units.FindAsync(id);
+            if (unit != null)
             {
                 unit.IsLeadUnit = isLeadUnit;
 
                 if (isLeadUnit)
                 {
                     // Choose one lead player: prefer an existing player with OnDutyLeadUnit, otherwise the first player
-                    string? leadNick = unit.PlayerNicks.FirstOrDefault(nick =>
-                    {
-                        var p = _playerTracker.GetPlayer(nick);
-                        return p != null && p.Status == PlayerStatus.OnDutyLeadUnit;
-                    });
+                    var players = await _db.Players.Where(p => unit.PlayerNicks.Contains(p.Nick)).ToListAsync();
+                    string? leadNick = players.FirstOrDefault(p => p.Status == PlayerStatus.OnDutyLeadUnit)?.Nick;
 
                     if (leadNick == null)
                     {
@@ -220,11 +236,11 @@ namespace SaMapViewer.Services
                     {
                         if (nick == leadNick)
                         {
-                            _playerTracker.SetPlayerStatus(nick, PlayerStatus.OnDutyLeadUnit);
+                            await _playerTracker.SetPlayerStatus(nick, PlayerStatus.OnDutyLeadUnit);
                         }
                         else
                         {
-                            _playerTracker.SetPlayerStatus(nick, PlayerStatus.OnDuty);
+                            await _playerTracker.SetPlayerStatus(nick, PlayerStatus.OnDuty);
                         }
                     }
                 }
@@ -233,99 +249,208 @@ namespace SaMapViewer.Services
                     // Not a lead unit anymore: set everyone to OnDuty
                     foreach (var nick in unit.PlayerNicks)
                     {
-                        _playerTracker.SetPlayerStatus(nick, PlayerStatus.OnDuty);
+                        await _playerTracker.SetPlayerStatus(nick, PlayerStatus.OnDuty);
                     }
                 }
+
+                _db.Units.Update(unit);
+                await _db.SaveChangesAsync();
             }
         }
 
-        public void AssignTacticalChannel(Guid id, Guid? channelId)
+        public async Task AssignTacticalChannel(Guid id, Guid? channelId)
         {
-            if (_units.TryGetValue(id, out var unit))
+            var unit = await _db.Units.FindAsync(id);
+            if (unit != null)
             {
                 unit.TacticalChannelId = channelId;
+                _db.Units.Update(unit);
+                await _db.SaveChangesAsync();
             }
         }
 
-        public List<Unit> GetUnitsBySituation(Guid situationId)
-        {
-            return _units.Values
-                .Where(u => u.SituationId == situationId)
-                .ToList();
-        }
+        public Task<List<Unit>> GetUnitsBySituation(Guid situationId) =>
+            _db.Units.AsNoTracking().Where(u => u.SituationId == situationId).ToListAsync();
 
-        public List<Unit> GetAvailableUnits()
-        {
-            return _units.Values
-                .Where(u => !u.SituationId.HasValue)
-                .ToList();
-        }
+        public Task<List<Unit>> GetAvailableUnits() =>
+            _db.Units.AsNoTracking().Where(u => !u.SituationId.HasValue).ToListAsync();
 
-        public string? GetLeadPlayerNick(Guid unitId)
+        public async Task<string?> GetLeadPlayerNick(Guid unitId)
         {
-            var unit = GetUnit(unitId);
+            var unit = await GetUnit(unitId);
             if (unit == null) return null;
 
-            // Ищем supervisor или supersupervisor
-            foreach (var nick in unit.PlayerNicks)
-            {
-                var player = _playerTracker.GetPlayer(nick);
-                if (player?.Role == PlayerRole.SuperSupervisor)
-                    return nick;
-            }
-            
-            foreach (var nick in unit.PlayerNicks)
-            {
-                var player = _playerTracker.GetPlayer(nick);
-                if (player?.Role == PlayerRole.Supervisor)
-                    return nick;
-            }
+            var players = await _db.Players.AsNoTracking().Where(p => unit.PlayerNicks.Contains(p.Nick)).ToListAsync();
+
+            var superSup = players.FirstOrDefault(p => p.Role == PlayerRole.SuperSupervisor);
+            if (superSup != null) return superSup.Nick;
+
+            var sup = players.FirstOrDefault(p => p.Role == PlayerRole.Supervisor);
+            if (sup != null) return sup.Nick;
             
             // Если нет supervisor'ов, возвращаем первого игрока
             return unit.PlayerNicks.FirstOrDefault();
         }
 
-        public List<PlayerPoint> GetPlayersInUnit(Guid unitId)
+        public async Task<List<PlayerPoint>> GetPlayersInUnit(Guid unitId)
         {
-            var unit = GetUnit(unitId);
+            var unit = await GetUnit(unitId);
             if (unit == null) return new List<PlayerPoint>();
 
-            var players = new List<PlayerPoint>();
-            foreach (var nick in unit.PlayerNicks)
-            {
-                var player = _playerTracker.GetPlayer(nick);
-                if (player != null)
-                {
-                    players.Add(player);
-                }
-            }
+            var players = await _db.Players.AsNoTracking()
+                .Where(p => unit.PlayerNicks.Contains(p.Nick))
+                .ToListAsync();
             return players;
+        }
+
+        /// <summary>
+        /// Находит ближайшие юниты к указанным координатам
+        /// </summary>
+        /// <param name="x">X координата</param>
+        /// <param name="y">Y координата</param>
+        /// <param name="limit">Максимальное количество юнитов для возврата (по умолчанию 5)</param>
+        /// <param name="onlyAvailable">Возвращать только свободные юниты (без ситуации)</param>
+        /// <returns>Список юнитов с расстоянием, отсортированный по близости</returns>
+        public async Task<List<UnitWithDistance>> GetNearestUnits(float x, float y, int limit = 5, bool onlyAvailable = false)
+        {
+            var units = onlyAvailable 
+                ? await _db.Units.AsNoTracking().Where(u => !u.SituationId.HasValue).ToListAsync()
+                : await _db.Units.AsNoTracking().ToListAsync();
+
+            var unitsWithDistance = new List<UnitWithDistance>();
+
+            foreach (var unit in units)
+            {
+                // Получаем координаты юнита (используем ведущего игрока или среднее всех игроков)
+                var unitPosition = await GetUnitPosition(unit);
+                
+                // Пропускаем юниты без валидных координат (игроки не в мире или -10000,-10000)
+                if (unitPosition == null || (unitPosition.Value.x == -10000f && unitPosition.Value.y == -10000f))
+                    continue;
+
+                // Вычисляем расстояние
+                var distance = CalculateDistance(x, y, unitPosition.Value.x, unitPosition.Value.y);
+
+                unitsWithDistance.Add(new UnitWithDistance
+                {
+                    Unit = unit,
+                    Distance = distance,
+                    X = unitPosition.Value.x,
+                    Y = unitPosition.Value.y
+                });
+            }
+
+            // Сортируем по расстоянию и берём первые N
+            return unitsWithDistance
+                .OrderBy(u => u.Distance)
+                .Take(limit)
+                .ToList();
+        }
+
+        public async Task<(float x, float y)?> GetUnitPosition(Guid unitId)
+        {
+            var unit = await _db.Units.AsNoTracking().FirstOrDefaultAsync(u => u.Id == unitId);
+            if (unit == null)
+                return null;
+
+            return await GetUnitPosition(unit);
+        }
+
+        /// <summary>
+        /// Получает позицию юнита (координаты ведущего игрока или среднее всех игроков)
+        /// </summary>
+        private async Task<(float x, float y)?> GetUnitPosition(Unit unit)
+        {
+            var players = await _db.Players.AsNoTracking()
+                .Where(p => unit.PlayerNicks.Contains(p.Nick))
+                .ToListAsync();
+
+            if (!players.Any())
+                return null;
+
+            // Пытаемся найти ведущего игрока
+            var leadPlayer = players.FirstOrDefault(p => p.Status == PlayerStatus.OnDutyLeadUnit);
+            
+            if (leadPlayer != null)
+            {
+                return (leadPlayer.X, leadPlayer.Y);
+            }
+
+            // Если ведущего нет, используем среднее всех игроков
+            // Фильтруем игроков с валидными координатами (не -10000, -10000)
+            var validPlayers = players.Where(p => !(p.X == -10000f && p.Y == -10000f)).ToList();
+            
+            if (!validPlayers.Any())
+                return null;
+
+            var avgX = validPlayers.Average(p => p.X);
+            var avgY = validPlayers.Average(p => p.Y);
+
+            return (avgX, avgY);
+        }
+
+        /// <summary>
+        /// Вычисляет евклидово расстояние между двумя точками
+        /// </summary>
+        private float CalculateDistance(float x1, float y1, float x2, float y2)
+        {
+            var dx = x2 - x1;
+            var dy = y2 - y1;
+            return (float)Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        // Валидация прав: установка статуса юнита (только создатель может менять)
+        public async Task<(bool success, string message)> SetUnitStatusWithValidation(Guid unitId, string status, string userNick)
+        {
+            var unit = await GetUnit(unitId);
+            if (unit == null)
+                return (false, "Юнит не найден");
+
+            if (!string.Equals(unit.CreatorNick, userNick, StringComparison.OrdinalIgnoreCase))
+                return (false, "Только создатель юнита может менять статус");
+
+            await SetUnitStatus(unitId, status);
+            return (true, "Статус юнита изменён");
+        }
+
+        // Валидация прав: установка флага лидера (только создатель может менять)
+        public async Task<(bool success, string message)> SetLeadUnitWithValidation(Guid unitId, bool isLeadUnit, string userNick)
+        {
+            var unit = await GetUnit(unitId);
+            if (unit == null)
+                return (false, "Юнит не найден");
+
+            if (!string.Equals(unit.CreatorNick, userNick, StringComparison.OrdinalIgnoreCase))
+                return (false, "Только создатель юнита может менять флаг лидера");
+
+            await SetLeadUnit(unitId, isLeadUnit);
+            return (true, "Флаг лидера изменён");
         }
 
         // Устаревшие методы для обратной совместимости
         [Obsolete("Use CreateUnit with List<string> playerNicks instead")]
-        public Unit CreateUnit(string marking, string playerNick, bool isLeadUnit = false)
+        public Task<Unit> CreateUnit(string marking, string playerNick, bool isLeadUnit = false)
         {
             return CreateUnitFromSinglePlayer(marking, playerNick, isLeadUnit);
         }
 
         [Obsolete("Use RemoveUnit instead")]
-        public void Delete(Guid id) => RemoveUnit(id);
+        public Task Delete(Guid id) => RemoveUnit(id);
 
         [Obsolete("Use UpdateUnit instead")]
-        public void Rename(Guid id, string marking) => UpdateUnit(id, marking);
+        public Task Rename(Guid id, string marking) => UpdateUnit(id, marking);
 
         [Obsolete("Use SetUnitStatus instead")]
-        public void SetStatus(Guid id, string status) => SetUnitStatus(id, status);
+        public Task SetStatus(Guid id, string status) => SetUnitStatus(id, status);
 
         [Obsolete("Use SetLeadUnit instead")]
-        public void SetRed(Guid id, bool isRed) => SetLeadUnit(id, isRed);
+        public Task SetRed(Guid id, bool isRed) => SetLeadUnit(id, isRed);
 
         [Obsolete("Use AddPlayerToUnit instead")]
-        public void AddPlayer(Guid id, string nick) => AddPlayerToUnit(id, nick);
+        public Task AddPlayer(Guid id, string nick) => AddPlayerToUnit(id, nick);
 
         [Obsolete("Use RemovePlayerFromUnit instead")]
-        public void RemovePlayer(Guid id, string nick) => RemovePlayerFromUnit(id, nick);
+        public Task RemovePlayer(Guid id, string nick) => RemovePlayerFromUnit(id, nick);
     }
 }
 

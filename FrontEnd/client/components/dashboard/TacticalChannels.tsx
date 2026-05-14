@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Radio, Users, Activity, RefreshCw, Clock, Edit, Save, X, MessageSquare } from "lucide-react";
 import { TacticalChannelDto } from "@shared/api";
 import { cn } from "@/lib/utils";
+import { apiPut } from "@/lib/utils";
 import { useData } from "@/contexts/DataContext";
 
 interface TacticalChannelsProps {
@@ -68,40 +69,7 @@ export function TacticalChannels({ className }: TacticalChannelsProps) {
 
   const saveChannelNotes = async (channelId: string) => {
     try {
-      const response = await fetch(`/api/channels/${channelId}/notes`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": "changeme-key"
-        },
-        body: JSON.stringify({ notes: editNotes.trim() })
-      });
-
-      if (!response.ok) {
-        // If channel id not found (404) maybe ids changed — refresh channels and try to find by name
-        if (response.status === 404) {
-          console.warn('[TacticalChannels] channel id not found, refreshing channels and retrying by name');
-          await refreshTacticalChannels();
-          const found = channels.find(c => c.id === channelId);
-          if (!found) {
-            // Try lookup by name in freshly loaded channels
-            const byName = channels.find(c => c.name === channels.find(ch => ch.id === channelId)?.name);
-            if (byName) {
-              const retry = await fetch(`/api/channels/${byName.id}/notes`, {
-                method: "PUT",
-                headers: { "Content-Type": "application/json", "X-API-Key": "changeme-key" },
-                body: JSON.stringify({ notes: editNotes.trim() })
-              });
-              if (!retry.ok) throw new Error(`Failed to update notes on retry: ${retry.status}`);
-              await refreshTacticalChannels();
-              setEditingChannelId(null);
-              setEditNotes("");
-              return;
-            }
-          }
-        }
-        throw new Error(`Failed to update notes: ${response.status}`);
-      }
+      await apiPut(`/api/channels/${channelId}/notes`, { notes: editNotes.trim() });
 
       // Refresh channels from Context
       await refreshTacticalChannels();

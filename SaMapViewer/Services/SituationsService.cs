@@ -2,279 +2,308 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using SaMapViewer.Data;
 using SaMapViewer.Models;
 
 namespace SaMapViewer.Services
 {
     public class SituationsService
     {
-        private readonly ConcurrentDictionary<Guid, Situation> _situations = new();
-        private readonly ConcurrentDictionary<string, HashSet<string>> _nickToTags = new(StringComparer.OrdinalIgnoreCase);
-        private readonly ConcurrentDictionary<string, string> _nickToBaseStatus = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, HashSet<string>> _nickToTags = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, string> _nickToBaseStatus = new(StringComparer.OrdinalIgnoreCase);
+        private readonly SaMapDbContext _db;
         private readonly PlayerTrackerService _tracker;
         private readonly UnitsService _unitsService;
+        private readonly ILogger<SituationsService> _logger;
 
-        public SituationsService(PlayerTrackerService tracker, UnitsService unitsService)
+        public SituationsService(SaMapDbContext db, PlayerTrackerService tracker, UnitsService unitsService, ILogger<SituationsService> logger)
         {
+            _db = db;
             _tracker = tracker;
             _unitsService = unitsService;
+            _logger = logger;
         }
 
-        public Situation Create(string type, Dictionary<string, string>? metadata = null)
+        public async Task<Situation> Create(string type, Dictionary<string, string>? metadata = null, string creatorNick = "")
         {
             var sit = new Situation
             {
                 Id = Guid.NewGuid(),
                 Type = type ?? string.Empty,
-                Metadata = metadata ?? new Dictionary<string, string>()
+                Metadata = metadata ?? new Dictionary<string, string>(),
+                CreatorNick = creatorNick,
+                LastActivityAt = DateTime.UtcNow
             };
-            // If metadata contains coordinates or location name, set numeric fields for compatibility
+
             if (sit.Metadata.TryGetValue("x", out var sx) && float.TryParse(sx, out var fx)) sit.X = fx;
             if (sit.Metadata.TryGetValue("y", out var sy) && float.TryParse(sy, out var fy)) sit.Y = fy;
             if (sit.Metadata.TryGetValue("location", out var lname)) sit.LocationName = lname;
-            _situations[sit.Id] = sit;
+
+            _db.Situations.Add(sit);
+            await _db.SaveChangesAsync();
             return sit;
         }
 
-        public Situation? GetSituation(Guid id)
+        public Task<Situation?> GetSituation(Guid id) => _db.Situations.FindAsync(id).AsTask();
+
+        public async Task<(bool, Situation?)> TryGet(Guid id)
         {
-            _situations.TryGetValue(id, out var situation);
-            return situation;
+            var situation = await _db.Situations.FindAsync(id);
+            return (situation != null, situation);
         }
 
-        public bool TryGet(Guid id, out Situation? situation) => _situations.TryGetValue(id, out situation);
+        public Task<List<Situation>> GetAll() => _db.Situations.AsNoTracking().OrderBy(s => s.CreatedAt).ToListAsync();
 
-        public List<Situation> GetAll() => _situations.Values.OrderBy(s => s.CreatedAt).ToList();
+        public Task<List<Situation>> GetActiveSituations() =>
+            _db.Situations.AsNoTracking().Where(s => s.IsActive).OrderBy(s => s.CreatedAt).ToListAsync();
 
-        public List<Situation> GetActiveSituations() => _situations.Values.Where(s => s.IsActive).OrderBy(s => s.CreatedAt).ToList();
-
-        public void RemoveSituation(Guid id)
+        public async Task RemoveSituation(Guid id)
         {
-            if (_situations.TryGetValue(id, out var situation))
+            var situation = await _db.Situations.FindAsync(id);
+            if (situation == null) return;
+
+            foreach (var unitId in situation.Units.ToList())
             {
-                // Освобождаем все юниты от ситуации
-                foreach (var unitId in situation.Units.ToList())
-                {
-                    RemoveUnitFromSituation(id, unitId);
-                }
-                
-                _situations.TryRemove(id, out _);
+                await RemoveUnitFromSituation(id, unitId);
             }
+
+            _db.Situations.Remove(situation);
+            await _db.SaveChangesAsync();
         }
 
-        public void CloseSituation(Guid id)
+        public async Task CloseSituation(Guid id)
         {
-            if (_situations.TryGetValue(id, out var situation))
+            var situation = await _db.Situations.FindAsync(id);
+            if (situation == null) return;
+
+            situation.IsActive = false;
+            foreach (var unitId in situation.Units.ToList())
             {
-                situation.IsActive = false;
-                
-                // Освобождаем все юниты от ситуации
-                foreach (var unitId in situation.Units.ToList())
-                {
-                    RemoveUnitFromSituation(id, unitId);
-                }
+                await RemoveUnitFromSituation(id, unitId);
             }
+
+            _db.Situations.Update(situation);
+            await _db.SaveChangesAsync();
         }
 
-        public void OpenSituation(Guid id)
+        public async Task OpenSituation(Guid id)
         {
-            if (_situations.TryGetValue(id, out var situation))
-            {
-                situation.IsActive = true;
-            }
+            var situation = await _db.Situations.FindAsync(id);
+            if (situation == null) return;
+            situation.IsActive = true;
+            _db.Situations.Update(situation);
+            await _db.SaveChangesAsync();
         }
 
-        public void AddUnitToSituation(Guid situationId, Guid unitId, bool asInitiator = false)
+        // Закрыть ситуацию с проверкой прав (только создатель может закрыть)
+        public async Task<(bool success, string message)> CloseSituationWithValidation(Guid id, string userNick)
         {
-            if (!_situations.TryGetValue(situationId, out var situation))
-                throw new ArgumentException($"Situation {situationId} not found");
+            var situation = await _db.Situations.FindAsync(id);
+            if (situation == null)
+                return (false, "Ситуация не найдена");
 
-            var unit = _unitsService.GetUnit(unitId);
-            if (unit == null)
-                throw new ArgumentException($"Unit {unitId} not found");
+            if (!string.Equals(situation.CreatorNick, userNick, StringComparison.OrdinalIgnoreCase))
+                return (false, "Только создатель может закрыть ситуацию");
 
-            // Если юнит уже на другой ситуации, снимаем его с неё
+            await CloseSituation(id);
+            return (true, "Ситуация закрыта");
+        }
+
+        // Удалить ситуацию с проверкой прав (только создатель может удалить)
+        public async Task<(bool success, string message)> RemoveSituationWithValidation(Guid id, string userNick)
+        {
+            var situation = await _db.Situations.FindAsync(id);
+            if (situation == null)
+                return (false, "Ситуация не найдена");
+
+            if (!string.Equals(situation.CreatorNick, userNick, StringComparison.OrdinalIgnoreCase))
+                return (false, "Только создатель может удалить ситуацию");
+
+            await RemoveSituation(id);
+            return (true, "Ситуация удалена");
+        }
+
+        public async Task AddUnitToSituation(Guid situationId, Guid unitId, bool asInitiator = false)
+        {
+            var situation = await _db.Situations.FindAsync(situationId) ?? throw new ArgumentException($"Situation {situationId} not found");
+            var unit = await _unitsService.GetUnit(unitId) ?? throw new ArgumentException($"Unit {unitId} not found");
+
             if (unit.SituationId.HasValue && unit.SituationId != situationId)
             {
-                RemoveUnitFromSituation(unit.SituationId.Value, unitId);
+                await RemoveUnitFromSituation(unit.SituationId.Value, unitId);
             }
 
-            // Если это первый юнит на ситуации, он становится инициатором (Green Unit)
             bool isFirstUnit = situation.Units.Count == 0;
-            
-            // Добавляем юнит к ситуации
             situation.AddUnit(unitId, isFirstUnit || asInitiator);
-            _unitsService.AttachToSituation(unitId, situationId);
+            situation.LastActivityAt = DateTime.UtcNow;
+            await _unitsService.AttachToSituation(unitId, situationId);
 
-            // Проверяем ранг игроков в юните - если есть сержант или выше, назначаем Red Unit
-            CheckAndAssignRedUnit(situationId, unitId);
+            await CheckAndAssignRedUnit(situationId, unitId);
+
+            _db.Situations.Update(situation);
+            await _db.SaveChangesAsync();
         }
-        
-        // Проверяет ранг игроков в юните и автоматически назначает Red Unit если есть сержант+
-        private void CheckAndAssignRedUnit(Guid situationId, Guid unitId)
+
+        private async Task CheckAndAssignRedUnit(Guid situationId, Guid unitId)
         {
-            if (!_situations.TryGetValue(situationId, out var situation))
-                return;
-                
-            var unit = _unitsService.GetUnit(unitId);
-            if (unit == null)
-                return;
-            
-            // Проверяем всех игроков в юните
+            var situation = await _db.Situations.FindAsync(situationId);
+            if (situation == null) return;
+
+            var unit = await _unitsService.GetUnit(unitId);
+            if (unit == null) return;
+
             foreach (var playerNick in unit.PlayerNicks)
             {
-                var player = _tracker.GetPlayer(playerNick);
-                if (player == null)
-                    continue;
-                    
-                // Если ранг - сержант или выше (численно меньше), назначаем Red Unit
+                var player = await _tracker.GetPlayer(playerNick);
+                if (player == null) continue;
+
                 if (player.Rank <= PlayerRank.PoliceSergeant)
                 {
                     situation.SetRedUnit(unitId);
-                    _unitsService.SetLeadUnit(unitId, true);
-                    return; // Нашли сержанта, выходим
+                    await _unitsService.SetLeadUnit(unitId, true);
+                    _db.Situations.Update(situation);
+                    await _db.SaveChangesAsync();
+                    return;
                 }
             }
         }
 
-        public void RemoveUnitFromSituation(Guid situationId, Guid unitId)
+        public async Task RemoveUnitFromSituation(Guid situationId, Guid unitId)
         {
-            if (_situations.TryGetValue(situationId, out var situation))
+            var situation = await _db.Situations.FindAsync(situationId);
+            if (situation == null) return;
+
+            situation.RemoveUnit(unitId);
+            await _unitsService.AttachToSituation(unitId, null);
+            await _unitsService.SetLeadUnit(unitId, false);
+
+            _db.Situations.Update(situation);
+            await _db.SaveChangesAsync();
+        }
+
+        public async Task SetRedUnit(Guid situationId, Guid unitId)
+        {
+            var situation = await _db.Situations.FindAsync(situationId);
+            if (situation == null) return;
+
+            situation.SetRedUnit(unitId);
+            await _unitsService.SetLeadUnit(unitId, true);
+
+            foreach (var otherUnitId in situation.Units.Where(u => u != unitId))
             {
-                situation.RemoveUnit(unitId);
-                _unitsService.AttachToSituation(unitId, null);
-                _unitsService.SetLeadUnit(unitId, false);
-
-                // Если ситуация стала пустой, может быть её стоит закрыть (но не удалять автоматически)
-                if (situation.Units.Count == 0)
-                {
-                    // Логика на усмотрение - можно добавить автозакрытие
-                }
+                await _unitsService.SetLeadUnit(otherUnitId, false);
             }
+
+            _db.Situations.Update(situation);
+            await _db.SaveChangesAsync();
         }
 
-        public void SetRedUnit(Guid situationId, Guid unitId)
+        public async Task<List<Unit>> GetUnitsInSituation(Guid situationId)
         {
-            if (_situations.TryGetValue(situationId, out var situation))
+            var situation = await _db.Situations.FindAsync(situationId);
+            if (situation == null) return new List<Unit>();
+
+            var units = new List<Unit>();
+            foreach (var uid in situation.Units)
             {
-                situation.SetRedUnit(unitId);
-                _unitsService.SetLeadUnit(unitId, true);
-                
-                // Убираем lead статус у других юнитов в этой ситуации
-                foreach (var otherUnitId in situation.Units.Where(u => u != unitId))
-                {
-                    _unitsService.SetLeadUnit(otherUnitId, false);
-                }
+                var unit = await _unitsService.GetUnit(uid);
+                if (unit != null) units.Add(unit);
             }
+            return units;
         }
 
-        public List<Unit> GetUnitsInSituation(Guid situationId)
+        public async Task<Unit?> GetGreenUnit(Guid situationId)
         {
-            if (!_situations.TryGetValue(situationId, out var situation))
-                return new List<Unit>();
-
-            return situation.Units
-                .Select(unitId => _unitsService.GetUnit(unitId))
-                .Where(unit => unit != null)
-                .ToList()!;
+            var situation = await _db.Situations.FindAsync(situationId);
+            if (situation?.GreenUnitId == null) return null;
+            return await _unitsService.GetUnit(situation.GreenUnitId.Value);
         }
 
-        // Получить Green Unit (инициатор)
-        public Unit? GetGreenUnit(Guid situationId)
+        public async Task<Unit?> GetRedUnit(Guid situationId)
         {
-            if (_situations.TryGetValue(situationId, out var situation) && situation.GreenUnitId.HasValue)
+            var situation = await _db.Situations.FindAsync(situationId);
+            if (situation?.RedUnitId == null) return null;
+            return await _unitsService.GetUnit(situation.RedUnitId.Value);
+        }
+
+        public async Task<List<Unit>> GetRegularUnits(Guid situationId)
+        {
+            var situation = await _db.Situations.FindAsync(situationId);
+            if (situation == null) return new List<Unit>();
+
+            var units = new List<Unit>();
+            foreach (var uid in situation.Units.Where(u => u != situation.GreenUnitId && u != situation.RedUnitId))
             {
-                return _unitsService.GetUnit(situation.GreenUnitId.Value);
+                var unit = await _unitsService.GetUnit(uid);
+                if (unit != null) units.Add(unit);
             }
-            return null;
+            return units;
         }
 
-        // Получить Red Unit (сержант или командир)
-        public Unit? GetRedUnit(Guid situationId)
-        {
-            if (_situations.TryGetValue(situationId, out var situation) && situation.RedUnitId.HasValue)
-            {
-                return _unitsService.GetUnit(situation.RedUnitId.Value);
-            }
-            return null;
-        }
-        
-        // Получить обычные юниты (не Green и не Red)
-        public List<Unit> GetRegularUnits(Guid situationId)
-        {
-            if (!_situations.TryGetValue(situationId, out var situation))
-                return new List<Unit>();
-
-            return situation.Units
-                .Where(unitId => unitId != situation.GreenUnitId && unitId != situation.RedUnitId)
-                .Select(unitId => _unitsService.GetUnit(unitId))
-                .Where(unit => unit != null)
-                .ToList()!;
-        }
-
-        // Оставляем старые методы для обратной совместимости с Players
-        public void SetBaseStatus(string nick, string baseStatus)
+        public async Task SetBaseStatus(string nick, string baseStatus)
         {
             _nickToBaseStatus[nick] = baseStatus ?? "ничего";
-            RecomputeStatus(nick);
+            await RecomputeStatus(nick);
         }
 
-        public void SetPanic(string nick, bool panic)
+        public async Task SetPanic(string nick, bool panic)
         {
-            if (panic) AddTag(nick, "PANIC");
-            else RemoveTag(nick, "PANIC");
+            if (panic) await AddTag(nick, "PANIC");
+            else await RemoveTag(nick, "PANIC");
         }
 
         [Obsolete("Use AddUnitToSituation instead")]
-        public void Join(Guid id, string nick)
+        public async Task Join(Guid id, string nick)
         {
-            // Оставлено для совместимости, но рекомендуется использовать Units
-            if (!_situations.TryGetValue(id, out var s)) return;
+            var (found, s) = await TryGet(id);
+            if (!found || s == null) return;
             var tag = GetTagForSituation(s);
-            if (!string.IsNullOrEmpty(tag)) AddTag(nick, tag);
+            if (!string.IsNullOrEmpty(tag)) await AddTag(nick, tag);
         }
 
         [Obsolete("Use RemoveUnitFromSituation instead")]
-        public void Leave(Guid id, string nick)
+        public async Task Leave(Guid id, string nick)
         {
-            // Оставлено для совместимости, но рекомендуется использовать Units
-            if (!_situations.TryGetValue(id, out var s)) return;
+            var (found, s) = await TryGet(id);
+            if (!found || s == null) return;
             var tag = GetTagForSituation(s);
-            if (!string.IsNullOrEmpty(tag)) RemoveTag(nick, tag);
+            if (!string.IsNullOrEmpty(tag)) await RemoveTag(nick, tag);
         }
 
-        // New, non-obsolete methods for managing player tags on situations.
-        // These keep the same behavior as the old Join/Leave helpers but are intended
-        // to be used by controllers without triggering Obsolete warnings.
-        public void AddPlayerToSituation(Guid id, string nick)
+        public async Task AddPlayerToSituation(Guid id, string nick)
         {
-            if (!_situations.TryGetValue(id, out var s)) return;
+            var (found, s) = await TryGet(id);
+            if (!found || s == null) return;
             var tag = GetTagForSituation(s);
-            if (!string.IsNullOrEmpty(tag)) AddTag(nick, tag);
+            if (!string.IsNullOrEmpty(tag)) await AddTag(nick, tag);
         }
 
-        public void RemovePlayerFromSituation(Guid id, string nick)
+        public async Task RemovePlayerFromSituation(Guid id, string nick)
         {
-            if (!_situations.TryGetValue(id, out var s)) return;
+            var (found, s) = await TryGet(id);
+            if (!found || s == null) return;
             var tag = GetTagForSituation(s);
-            if (!string.IsNullOrEmpty(tag)) RemoveTag(nick, tag);
+            if (!string.IsNullOrEmpty(tag)) await RemoveTag(nick, tag);
         }
 
-        private void AddTag(string nick, string tag)
+        private async Task AddTag(string nick, string tag)
         {
             var set = _nickToTags.GetOrAdd(nick, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
             set.Add(tag);
-            RecomputeStatus(nick);
+            await RecomputeStatus(nick);
         }
 
-        private void RemoveTag(string nick, string tag)
+        private async Task RemoveTag(string nick, string tag)
         {
             if (_nickToTags.TryGetValue(nick, out var set))
             {
                 set.Remove(tag);
                 if (set.Count == 0) _nickToTags.TryRemove(nick, out _);
             }
-            RecomputeStatus(nick);
+            await RecomputeStatus(nick);
         }
 
         private string GetTagForSituation(Situation s)
@@ -284,8 +313,8 @@ namespace SaMapViewer.Services
                 case "code7":
                     return "Code 7";
                 case "pursuit":
-                    var mode = s.Metadata.TryGetValue("mode", out var m) ? m : ""; // passive|active|foot
-                    var tac = s.Metadata.TryGetValue("tac", out var t) ? t : null;   // 1|2|3
+                    var mode = s.Metadata.TryGetValue("mode", out var m) ? m : "";
+                    var tac = s.Metadata.TryGetValue("tac", out var t) ? t : null;
                     var label = mode switch
                     {
                         "passive" => "Погоня (пас.)",
@@ -296,7 +325,7 @@ namespace SaMapViewer.Services
                     if (!string.IsNullOrWhiteSpace(tac)) label += $" TAC-{tac}";
                     return label;
                 case "trafficstop":
-                    var risk = s.Metadata.TryGetValue("risk", out var r) ? r : ""; // high|low
+                    var risk = s.Metadata.TryGetValue("risk", out var r) ? r : "";
                     return risk == "high" ? "Трафик-стоп (выс.)" : risk == "low" ? "Трафик-стоп (низ.)" : "Трафик-стоп";
                 case "code6":
                     return "Code 6";
@@ -315,10 +344,10 @@ namespace SaMapViewer.Services
             return final;
         }
 
-        private void RecomputeStatus(string nick)
+        private async Task RecomputeStatus(string nick)
         {
             var final = GetStatus(nick);
-            _tracker.SetStatus(nick, final);
+            await _tracker.SetStatus(nick, final);
         }
     }
 }

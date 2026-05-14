@@ -40,7 +40,7 @@ import {
   getPlayerStatusText,
   getPlayerStatusColor
 } from "@shared/api";
-import { emitAppEvent } from "@/lib/utils";
+import { emitAppEvent, apiGet, apiPost, apiPut, apiDelete } from "@/lib/utils";
 import type { PlayerRecord } from "./PlayersTable";
 import { MarkingSelector } from "./MarkingSelector";
 import { useData } from "@/contexts/DataContext";
@@ -121,14 +121,9 @@ export function UnitsManagement({
 
   const fetchAvailablePlayers = async () => {
     try {
-      const response = await fetch("/api/players/available-for-unit");
-      if (response.ok) {
-        const data = await response.json();
-        console.log(`Fetched ${data.length} available players:`, data);
-        setAvailablePlayers(data);
-      } else {
-        console.error("Failed to fetch available players:", response.status, await response.text());
-      }
+      const data = await apiGet<PlayerPointDto[]>("/api/players/available-for-unit");
+      console.log(`Fetched ${data.length} available players:`, data);
+      setAvailablePlayers(data);
     } catch (error) {
       console.error("Error fetching available players:", error);
     }
@@ -136,11 +131,8 @@ export function UnitsManagement({
 
   const fetchUnitPlayers = async (unitId: string) => {
     try {
-      const response = await fetch(`/api/units/${unitId}/players`);
-      if (response.ok) {
-        const data = await response.json();
-        setUnitPlayers(data);
-      }
+      const data = await apiGet<PlayerPointDto[]>(`/api/units/${unitId}/players`);
+      setUnitPlayers(data);
     } catch (error) {
       console.error("Error fetching unit players:", error);
     }
@@ -180,35 +172,22 @@ export function UnitsManagement({
       console.log("Creating unit:", unitToCreate);
       console.log("Available players before creation:", availablePlayers.length);
 
-      const response = await fetch("/api/units", {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "X-API-Key": "changeme-key"
-        },
-        body: JSON.stringify(unitToCreate)
-      });
+      await apiPost("/api/units", unitToCreate);
 
-      if (response.ok) {
-        console.log('[UnitsManagement] Unit created successfully, refreshing...');
-        await refreshUnits(); // Refresh from Context instead of local fetch
-        await fetchAvailablePlayers();
-        emitAppEvent('units:updated');
-        emitAppEvent('players:updated');
-        setIsCreateDialogOpen(false);
-        setNewUnit({
-          marking: "",
-          playerNicks: [],
-          isLeadUnit: false
-        });
-        setSelectedPlayerNicks([]);
-        setSelectedLeadNick(null);
-        alert("Юнит успешно создан!");
-      } else {
-        const errorText = await response.text();
-        alert(`Ошибка создания юнита: ${response.status} - ${errorText}`);
-        console.error("Error creating unit:", response.status, errorText);
-      }
+      console.log('[UnitsManagement] Unit created successfully, refreshing...');
+      await refreshUnits(); // Refresh from Context instead of local fetch
+      await fetchAvailablePlayers();
+      emitAppEvent('units:updated');
+      emitAppEvent('players:updated');
+      setIsCreateDialogOpen(false);
+      setNewUnit({
+        marking: "",
+        playerNicks: [],
+        isLeadUnit: false
+      });
+      setSelectedPlayerNicks([]);
+      setSelectedLeadNick(null);
+      alert("Юнит успешно создан!");
     } catch (error) {
       console.error("Error creating unit:", error);
       alert(`Ошибка создания юнита: ${error instanceof Error ? error.message : String(error)}`);
@@ -219,15 +198,9 @@ export function UnitsManagement({
     if (!confirm("Удалить юнит? Все игроки будут освобождены.")) return;
 
     try {
-      const response = await fetch(`/api/units/${unitId}`, {
-        method: "DELETE",
-        headers: { "X-API-Key": "changeme-key" }
-      });
-
-      if (response.ok) {
-        await refreshUnits(); // Use Context refresh
-        await fetchAvailablePlayers();
-      }
+      await apiDelete(`/api/units/${unitId}`);
+      await refreshUnits(); // Use Context refresh
+      await fetchAvailablePlayers();
     } catch (error) {
       console.error("Error deleting unit:", error);
     }
@@ -236,26 +209,18 @@ export function UnitsManagement({
   const addPlayerToUnit = async (unitId: string, playerNick: string) => {
     try {
       const request: AddPlayerToUnitRequest = { playerNick };
-      const response = await fetch(`/api/units/${unitId}/players/add`, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "X-API-Key": "changeme-key"
-        },
-        body: JSON.stringify(request)
-      });
+      await apiPost(`/api/units/${unitId}/players/add`, request);
 
-      if (response.ok) {
-        await refreshUnits(); // Use Context refresh
-        await fetchAvailablePlayers();
-        emitAppEvent('units:updated');
-        emitAppEvent('players:updated');
-        if (selectedUnit?.id === unitId) {
-          await fetchUnitPlayers(unitId);
-        }
+      await refreshUnits(); // Use Context refresh
+      await fetchAvailablePlayers();
+      emitAppEvent('units:updated');
+      emitAppEvent('players:updated');
+      if (selectedUnit?.id === unitId) {
+        await fetchUnitPlayers(unitId);
       }
     } catch (error) {
       console.error("Error adding player to unit:", error);
+      alert(`Ошибка добавления игрока: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -264,26 +229,18 @@ export function UnitsManagement({
 
     try {
       const request: RemovePlayerFromUnitRequest = { playerNick };
-      const response = await fetch(`/api/units/${unitId}/players/remove`, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "X-API-Key": "changeme-key"
-        },
-        body: JSON.stringify(request)
-      });
+      await apiPost(`/api/units/${unitId}/players/remove`, request);
 
-      if (response.ok) {
-        await refreshUnits(); // Use Context refresh
-        await fetchAvailablePlayers();
-        emitAppEvent('units:updated');
-        emitAppEvent('players:updated');
-        if (selectedUnit?.id === unitId) {
-          await fetchUnitPlayers(unitId);
-        }
+      await refreshUnits(); // Use Context refresh
+      await fetchAvailablePlayers();
+      emitAppEvent('units:updated');
+      emitAppEvent('players:updated');
+      if (selectedUnit?.id === unitId) {
+        await fetchUnitPlayers(unitId);
       }
     } catch (error) {
       console.error("Error removing player from unit:", error);
+      alert(`Ошибка удаления игрока: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -311,25 +268,12 @@ export function UnitsManagement({
     if (!unitForStatusChange) return;
 
     try {
-      const response = await fetch(`/api/units/${unitForStatusChange.id}/status`, {
-        method: "PUT",
-        headers: { 
-          "Content-Type": "application/json",
-          "X-API-Key": "changeme-key"
-        },
-        body: JSON.stringify({ status: newUnitStatus })
-      });
-
-      if (response.ok) {
-        await refreshUnits(); // Use Context refresh
-        emitAppEvent('units:updated');
-        setShowStatusDialog(false);
-        setUnitForStatusChange(null);
-        setNewUnitStatus("");
-      } else {
-        const errorText = await response.text();
-        alert(`Ошибка изменения статуса: ${response.status} - ${errorText}`);
-      }
+      await apiPut(`/api/units/${unitForStatusChange.id}/status`, { status: newUnitStatus });
+      await refreshUnits(); // Use Context refresh
+      emitAppEvent('units:updated');
+      setShowStatusDialog(false);
+      setUnitForStatusChange(null);
+      setNewUnitStatus("");
     } catch (error) {
       console.error("Error updating unit status:", error);
       alert(`Ошибка изменения статуса: ${error instanceof Error ? error.message : String(error)}`);

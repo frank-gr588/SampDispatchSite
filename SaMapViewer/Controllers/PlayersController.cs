@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using SaMapViewer.Models;
 using SaMapViewer.Services;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace SaMapViewer.Controllers
 {
@@ -19,15 +20,15 @@ namespace SaMapViewer.Controllers
         }
 
         [HttpGet]
-        public ActionResult<IEnumerable<PlayerPoint>> GetAllPlayers()
+        public async Task<ActionResult<IEnumerable<PlayerPoint>>> GetAllPlayers()
         {
-            return Ok(_playerTracker.GetAllPlayers());
+            return Ok(await _playerTracker.GetAllPlayers());
         }
 
         [HttpGet("{nick}")]
-        public ActionResult<PlayerPoint> GetPlayer(string nick)
+        public async Task<ActionResult<PlayerPoint>> GetPlayer(string nick)
         {
-            var player = _playerTracker.GetPlayer(nick);
+            var player = await _playerTracker.GetPlayer(nick);
             if (player == null)
                 return NotFound($"Player '{nick}' not found");
             
@@ -35,12 +36,12 @@ namespace SaMapViewer.Controllers
         }
 
         [HttpPost]
-        public ActionResult<PlayerPoint> CreatePlayer([FromBody] CreatePlayerRequest request)
+        public async Task<ActionResult<PlayerPoint>> CreatePlayer([FromBody] CreatePlayerRequest request)
         {
             if (string.IsNullOrWhiteSpace(request.Nick))
                 return BadRequest("Nick is required");
 
-            var existingPlayer = _playerTracker.GetPlayer(request.Nick);
+            var existingPlayer = await _playerTracker.GetPlayer(request.Nick);
             if (existingPlayer != null)
                 return Conflict($"Player '{request.Nick}' already exists");
 
@@ -57,43 +58,50 @@ namespace SaMapViewer.Controllers
             if (request.Rank.HasValue)
                 player.SetRank(request.Rank.Value);
 
-            _playerTracker.AddPlayer(player);
+            await _playerTracker.AddPlayer(player);
             return CreatedAtAction(nameof(GetPlayer), new { nick = player.Nick }, player);
         }
 
         [HttpPut("{nick}/status")]
-        public ActionResult UpdatePlayerStatus(string nick, [FromBody] UpdateStatusRequest request)
+        public async Task<ActionResult> UpdatePlayerStatus(string nick, [FromBody] UpdateStatusRequest request)
         {
-            var player = _playerTracker.GetPlayer(nick);
+            var player = await _playerTracker.GetPlayer(nick);
             if (player == null)
                 return NotFound($"Player '{nick}' not found");
 
-            player.SetStatus(request.Status);
-            return Ok(player);
+            await _playerTracker.SetPlayerStatus(nick, request.Status);
+            var updated = await _playerTracker.GetPlayer(nick);
+            return Ok(updated);
         }
 
         [HttpPut("{nick}/role")]
-        public ActionResult UpdatePlayerRole(string nick, [FromBody] UpdateRoleRequest request)
+        public async Task<ActionResult> UpdatePlayerRole(string nick, [FromBody] UpdateRoleRequest request)
         {
-            var player = _playerTracker.GetPlayer(nick);
+            var player = await _playerTracker.GetPlayer(nick);
             if (player == null)
                 return NotFound($"Player '{nick}' not found");
 
             var oldRole = player.Role;
             player.SetRole(request.Role);
+            await _playerTracker.AddPlayer(player);
 
             // Если игрок в юните, нужно пересчитать статус юнита и игрока
             if (player.UnitId.HasValue)
             {
-                var unit = _unitsService.GetUnit(player.UnitId.Value);
+                var unit = await _unitsService.GetUnit(player.UnitId.Value);
                 if (unit != null)
                 {
                     // Проверяем, есть ли супервайзеры в юните
-                    bool hasSupervisors = unit.PlayerNicks.Any(n =>
+                    bool hasSupervisors = false;
+                    foreach (var n in unit.PlayerNicks)
                     {
-                        var p = _playerTracker.GetPlayer(n);
-                        return p != null && (p.Role == PlayerRole.Supervisor || p.Role == PlayerRole.SuperSupervisor);
-                    });
+                        var p = await _playerTracker.GetPlayer(n);
+                        if (p != null && (p.Role == PlayerRole.Supervisor || p.Role == PlayerRole.SuperSupervisor))
+                        {
+                            hasSupervisors = true;
+                            break;
+                        }
+                    }
 
                     // Обновляем флаг ведущего юнита
                     bool wasLeadUnit = unit.IsLeadUnit;
@@ -105,11 +113,11 @@ namespace SaMapViewer.Controllers
                     {
                         foreach (var n in unit.PlayerNicks)
                         {
-                            var p = _playerTracker.GetPlayer(n);
+                            var p = await _playerTracker.GetPlayer(n);
                             if (p != null)
                             {
                                 bool shouldBeLead = unit.IsLeadUnit && (p.Role == PlayerRole.Supervisor || p.Role == PlayerRole.SuperSupervisor);
-                                _playerTracker.SetPlayerStatus(n, shouldBeLead ? PlayerStatus.OnDutyLeadUnit : PlayerStatus.OnDuty);
+                                await _playerTracker.SetPlayerStatus(n, shouldBeLead ? PlayerStatus.OnDutyLeadUnit : PlayerStatus.OnDuty);
                             }
                         }
                     }
@@ -119,65 +127,105 @@ namespace SaMapViewer.Controllers
             return Ok(player);
         }
 
-        [HttpDelete("{nick}")]
-        public ActionResult DeletePlayer(string nick)
+        [HttpPost("suspect")]
+        public async Task<ActionResult<PlayerPoint>> UpsertSuspect([FromBody] CreateSuspectRequest request)
         {
-            var player = _playerTracker.GetPlayer(nick);
+            if (string.IsNullOrWhiteSpace(request.Nick))
+                return BadRequest("Nick is required");
+            if (string.IsNullOrWhiteSpace(request.CreatorNick))
+                return BadRequest("CreatorNick is required");
+
+            var existingPlayer = await _playerTracker.GetPlayer(request.Nick);
+            if (existingPlayer != null)
+            {
+                // Update coordinates
+                await _playerTracker.UpdatePlayer(request.Nick, request.X ?? existingPlayer.X, request.Y ?? existingPlayer.Y, existingPlayer.InVehicle);
+                var updated = await _playerTracker.GetPlayer(request.Nick);
+                return Ok(updated);
+            }
+
+            var player = new global::SaMapViewer.Models.PlayerPoint(
+                request.Nick,
+                request.X ?? -10000f,
+                request.Y ?? -10000f)
+            {
+                IsSuspect = true
+            };
+
+            await _playerTracker.AddPlayer(player);
+            return CreatedAtAction(nameof(GetPlayer), new { nick = player.Nick }, player);
+        }
+
+        [HttpDelete("{nick}/suspect")]
+        public async Task<ActionResult> DeleteSuspect(string nick)
+        {
+            var player = await _playerTracker.GetPlayer(nick);
+            if (player == null || !player.IsSuspect)
+                return NotFound($"Suspect '{nick}' not found");
+
+            await _playerTracker.RemovePlayer(nick);
+            return NoContent();
+        }
+
+        [HttpDelete("{nick}")]
+        public async Task<ActionResult> DeletePlayer(string nick)
+        {
+            var player = await _playerTracker.GetPlayer(nick);
             if (player == null)
                 return NotFound($"Player '{nick}' not found");
 
             // Если игрок в юните, убираем его из юнита (но не удаляем сам юнит!)
             if (player.UnitId.HasValue)
             {
-                _unitsService.RemovePlayerFromUnit(player.UnitId.Value, nick);
+                await _unitsService.RemovePlayerFromUnit(player.UnitId.Value, nick);
             }
 
-            _playerTracker.RemovePlayer(nick);
+            await _playerTracker.RemovePlayer(nick);
             return NoContent();
         }
 
         [HttpGet("by-status/{status}")]
-        public ActionResult<IEnumerable<PlayerPoint>> GetPlayersByStatus(PlayerStatus status)
+        public async Task<ActionResult<IEnumerable<PlayerPoint>>> GetPlayersByStatus(PlayerStatus status)
         {
-            var players = _playerTracker.GetAllPlayers()
-                .Where(p => p.Status == status);
-            return Ok(players);
+            var players = await _playerTracker.GetPlayersByStatus(status);
+            return Ok(players.AsEnumerable());
         }
 
         [HttpGet("by-role/{role}")]
-        public ActionResult<IEnumerable<PlayerPoint>> GetPlayersByRole(PlayerRole role)
+        public async Task<ActionResult<IEnumerable<PlayerPoint>>> GetPlayersByRole(PlayerRole role)
         {
-            var players = _playerTracker.GetAllPlayers()
-                .Where(p => p.Role == role);
-            return Ok(players);
+            var players = await _playerTracker.GetPlayersByRole(role);
+            return Ok(players.AsEnumerable());
         }
 
         [HttpGet("available-for-unit")]
-        public ActionResult<IEnumerable<PlayerPoint>> GetAvailablePlayersForUnit()
+        public async Task<ActionResult<IEnumerable<PlayerPoint>>> GetAvailablePlayersForUnit()
         {
-            var players = _playerTracker.GetAvailablePlayersForUnit();
+            var players = await _playerTracker.GetAvailablePlayersForUnit();
             return Ok(players);
         }
 
         [HttpPut("{nick}/afk")]
-        public ActionResult UpdatePlayerAFK(string nick, [FromBody] UpdateAFKRequest request)
+        public async Task<ActionResult> UpdatePlayerAFK(string nick, [FromBody] UpdateAFKRequest request)
         {
-            var player = _playerTracker.GetPlayer(nick);
+            var player = await _playerTracker.GetPlayer(nick);
             if (player == null)
                 return NotFound($"Player '{nick}' not found");
 
-            _playerTracker.SetPlayerAFK(nick, request.IsAFK);
-            return Ok(player);
+            await _playerTracker.SetPlayerAFK(nick, request.IsAFK);
+            var updated = await _playerTracker.GetPlayer(nick);
+            return Ok(updated);
         }
 
         [HttpPut("{nick}/rank")]
-        public ActionResult UpdatePlayerRank(string nick, [FromBody] UpdateRankRequest request)
+        public async Task<ActionResult> UpdatePlayerRank(string nick, [FromBody] UpdateRankRequest request)
         {
-            var player = _playerTracker.GetPlayer(nick);
+            var player = await _playerTracker.GetPlayer(nick);
             if (player == null)
                 return NotFound($"Player '{nick}' not found");
 
             player.SetRank(request.Rank);
+            await _playerTracker.AddPlayer(player);
             return Ok(player);
         }
     }
@@ -210,5 +258,13 @@ namespace SaMapViewer.Controllers
     public class UpdateAFKRequest
     {
         public bool IsAFK { get; set; }
+    }
+
+    public class CreateSuspectRequest
+    {
+        public string Nick { get; set; } = string.Empty;
+        public string CreatorNick { get; set; } = string.Empty; // Кто инициировал погоню
+        public float? X { get; set; }
+        public float? Y { get; set; }
     }
 }

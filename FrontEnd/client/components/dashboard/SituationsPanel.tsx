@@ -20,6 +20,7 @@ export type SituationPriority = "Low" | "Moderate" | "High" | "Critical";
 
 export interface SituationRecord {
   id: number;
+  backendId?: string;
   code: string;
   title: string;
   status: string;

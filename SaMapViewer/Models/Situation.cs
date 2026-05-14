@@ -23,7 +23,11 @@ namespace SaMapViewer.Models
         public Guid? RedUnitId { get; set; }
         
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime? LastActivityAt { get; set; }
         public bool IsActive { get; set; } = true;
+        
+        // Никнейм создателя ситуации (для валидации прав при закрытии/удалении)
+        public string CreatorNick { get; set; } = string.Empty;
 
         // Добавить юнит на ситуацию
         public void AddUnit(Guid unitId, bool isInitiator = false)

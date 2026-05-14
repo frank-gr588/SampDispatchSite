@@ -1,26 +1,27 @@
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { UnitDto, SituationDto, PlayerPointDto, TacticalChannelDto } from '@shared/api';
+import { apiGet } from '@/lib/utils';
 
 interface DataContextType {
   // Units
   units: UnitDto[];
   setUnits: React.Dispatch<React.SetStateAction<UnitDto[]>>;
-  refreshUnits: () => Promise<void>;
+  refreshUnits: (immediate?: boolean) => Promise<void>;
   
   // Situations
   situations: SituationDto[];
   setSituations: React.Dispatch<React.SetStateAction<SituationDto[]>>;
-  refreshSituations: () => Promise<void>;
+  refreshSituations: (immediate?: boolean) => Promise<void>;
   
   // Players
   players: PlayerPointDto[];
   setPlayers: React.Dispatch<React.SetStateAction<PlayerPointDto[]>>;
-  refreshPlayers: () => Promise<void>;
+  refreshPlayers: (immediate?: boolean) => Promise<void>;
   
   // Tactical Channels
   tacticalChannels: TacticalChannelDto[];
   setTacticalChannels: React.Dispatch<React.SetStateAction<TacticalChannelDto[]>>;
-  refreshTacticalChannels: () => Promise<void>;
+  refreshTacticalChannels: (immediate?: boolean) => Promise<void>;
   
   // Global refresh
   refreshAll: () => Promise<void>;
@@ -28,6 +29,10 @@ interface DataContextType {
 }
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
+const PLAYERS_POLL_MS = 1000;
+const UNITS_POLL_MS = 1000;
+const SITUATIONS_POLL_MS = 1000;
+const CHANNELS_POLL_MS = 2000;
 
 export function DataProvider({ children }: { children: React.ReactNode }) {
   const [units, setUnits] = useState<UnitDto[]>([]);
@@ -35,83 +40,122 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [players, setPlayers] = useState<PlayerPointDto[]>([]);
   const [tacticalChannels, setTacticalChannels] = useState<TacticalChannelDto[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  
+  // Дебаунс для предотвращения частых запросов
+  const debounceTimers = useRef<Record<string, NodeJS.Timeout>>({});
+  
+  // Флаги для предотвращения одновременных запросов
+  const fetchingFlags = useRef<Record<string, boolean>>({});
 
-  const refreshUnits = useCallback(async () => {
-    try {
-      console.log('[DataContext] Fetching units...');
-      const response = await fetch('/api/units');
-      if (response.ok) {
-        const data = await response.json();
-        console.log('[DataContext] Units loaded:', data.length);
-        setUnits(Array.isArray(data) ? data : []);
-      } else {
-        console.error('[DataContext] Units fetch failed:', response.status);
+  const refreshUnits = useCallback(async (immediate = false) => {
+    if (!immediate) {
+      // Дебаунс: если уже есть запланированный запрос, отменяем его
+      if (debounceTimers.current.units) {
+        clearTimeout(debounceTimers.current.units);
       }
+      // Планируем новый запрос через 300ms
+      debounceTimers.current.units = setTimeout(() => refreshUnits(true), 300);
+      return;
+    }
+    
+    // Предотвращаем одновременные запросы
+    if (fetchingFlags.current.units) {
+      return;
+    }
+    
+    fetchingFlags.current.units = true;
+    try {
+      const data = await apiGet<UnitDto[]>('/api/units');
+      setUnits(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('[DataContext] Failed to fetch units:', error);
+    } finally {
+      fetchingFlags.current.units = false;
     }
   }, []);
 
-  const refreshSituations = useCallback(async () => {
-    try {
-      console.log('[DataContext] Fetching situations...');
-      const response = await fetch('/api/situations/all');
-      if (response.ok) {
-        const data = await response.json();
-        console.log('[DataContext] Situations loaded:', data.length);
-        setSituations(Array.isArray(data) ? data : []);
-        console.log('[DataContext] Situations loaded (debug suppressed)');
-      } else {
-        console.error('[DataContext] Situations fetch failed:', response.status);
+  const refreshSituations = useCallback(async (immediate = false) => {
+    if (!immediate) {
+      if (debounceTimers.current.situations) {
+        clearTimeout(debounceTimers.current.situations);
       }
+      debounceTimers.current.situations = setTimeout(() => refreshSituations(true), 300);
+      return;
+    }
+    
+    if (fetchingFlags.current.situations) {
+      return;
+    }
+    
+    fetchingFlags.current.situations = true;
+    try {
+      const data = await apiGet<SituationDto[]>('/api/situations/all');
+      setSituations(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('[DataContext] Failed to fetch situations:', error);
+    } finally {
+      fetchingFlags.current.situations = false;
     }
   }, []);
 
-  const refreshPlayers = useCallback(async () => {
-    try {
-      console.log('[DataContext] Fetching players...');
-      const response = await fetch('/api/players');
-      if (response.ok) {
-        const data = await response.json();
-        console.log('[DataContext] Players loaded:', data.length);
-        setPlayers(Array.isArray(data) ? data : []);
-      } else {
-        console.error('[DataContext] Players fetch failed:', response.status);
+  const refreshPlayers = useCallback(async (immediate = false) => {
+    if (!immediate) {
+      if (debounceTimers.current.players) {
+        clearTimeout(debounceTimers.current.players);
       }
+      debounceTimers.current.players = setTimeout(() => refreshPlayers(true), 300);
+      return;
+    }
+    
+    if (fetchingFlags.current.players) {
+      return;
+    }
+    
+    fetchingFlags.current.players = true;
+    try {
+      const data = await apiGet<PlayerPointDto[]>('/api/players');
+      setPlayers(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('[DataContext] Failed to fetch players:', error);
+    } finally {
+      fetchingFlags.current.players = false;
     }
   }, []);
 
-  const refreshTacticalChannels = useCallback(async () => {
-    try {
-      console.log('[DataContext] Fetching channels...');
-      const response = await fetch('/api/channels/all');
-      if (response.ok) {
-        const data = await response.json();
-        console.log('[DataContext] Channels loaded:', data.length);
-        setTacticalChannels(Array.isArray(data) ? data : []);
-      } else {
-        console.error('[DataContext] Channels fetch failed:', response.status);
+  const refreshTacticalChannels = useCallback(async (immediate = false) => {
+    if (!immediate) {
+      if (debounceTimers.current.channels) {
+        clearTimeout(debounceTimers.current.channels);
       }
+      debounceTimers.current.channels = setTimeout(() => refreshTacticalChannels(true), 300);
+      return;
+    }
+    
+    if (fetchingFlags.current.channels) {
+      return;
+    }
+    
+    fetchingFlags.current.channels = true;
+    try {
+      const data = await apiGet<TacticalChannelDto[]>('/api/channels/all');
+      setTacticalChannels(Array.isArray(data) ? data : []);
     } catch (error) {
-      console.error('[DataContext] Failed to fetch tactical channels:', error);
+      console.error('[DataContext] Failed to fetch channels:', error);
+    } finally {
+      fetchingFlags.current.channels = false;
     }
   }, []);
 
   const refreshAll = useCallback(async () => {
-    console.log('[DataContext] RefreshAll started');
     setIsLoading(true);
     try {
+      // Всегда immediate для refreshAll
       await Promise.all([
-        refreshUnits(),
-        refreshSituations(),
-        refreshPlayers(),
-        refreshTacticalChannels(),
+        refreshUnits(true),
+        refreshSituations(true),
+        refreshPlayers(true),
+        refreshTacticalChannels(true),
       ]);
-      console.log('[DataContext] RefreshAll completed');
     } catch (error) {
       console.error('[DataContext] RefreshAll error:', error);
     } finally {
@@ -119,12 +163,43 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     }
   }, [refreshUnits, refreshSituations, refreshPlayers, refreshTacticalChannels]);
 
-  // Initial load - only once on mount
+  // Initial load + background polling
   useEffect(() => {
-    console.log('[DataContext] Initial load...');
     refreshAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Empty deps - load only once on mount
+    const unitsInterval = window.setInterval(() => refreshUnits(true), UNITS_POLL_MS);
+    const situationsInterval = window.setInterval(() => refreshSituations(true), SITUATIONS_POLL_MS);
+    const playersInterval = window.setInterval(() => refreshPlayers(true), PLAYERS_POLL_MS);
+    const channelsInterval = window.setInterval(() => refreshTacticalChannels(true), CHANNELS_POLL_MS);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshAll();
+      }
+    };
+
+    const handleWindowFocus = () => {
+      refreshAll();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
+
+    return () => {
+      window.clearInterval(unitsInterval);
+      window.clearInterval(situationsInterval);
+      window.clearInterval(playersInterval);
+      window.clearInterval(channelsInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [refreshAll, refreshPlayers, refreshSituations, refreshTacticalChannels, refreshUnits]);
+  
+  // Очистка таймеров при размонтировании
+  useEffect(() => {
+    return () => {
+      Object.values(debounceTimers.current).forEach(timer => clearTimeout(timer));
+    };
+  }, []);
 
   const value: DataContextType = {
     units,

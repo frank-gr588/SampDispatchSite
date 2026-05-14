@@ -1,11 +1,15 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using SaMapViewer.Data;
 using SaMapViewer.Hubs;
 using SaMapViewer.Models;
 using SaMapViewer.Services;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace SaMapViewer.Controllers
 {
@@ -14,30 +18,28 @@ namespace SaMapViewer.Controllers
     public class UnitsController : ControllerBase
     {
         private readonly UnitsService _units;
-        private readonly PlayerTrackerService _playerTracker;
         private readonly IHubContext<CoordsHub> _hub;
         private readonly HistoryService _history;
-        private readonly Microsoft.Extensions.Options.IOptions<SaMapViewer.Services.SaOptions> _options;
+        private readonly SaMapDbContext _db;
 
         public UnitsController(
-            UnitsService units, 
-            PlayerTrackerService playerTracker,
-            IHubContext<CoordsHub> hub, 
-            HistoryService history, 
-            Microsoft.Extensions.Options.IOptions<SaMapViewer.Services.SaOptions> options)
+            UnitsService units,
+            IHubContext<CoordsHub> hub,
+            HistoryService history,
+            SaMapDbContext db)
         {
             _units = units;
-            _playerTracker = playerTracker;
             _hub = hub;
             _history = history;
-            _options = options;
+            _db = db;
         }
 
         public class CreateUnitDto 
         { 
             public string Marking { get; set; } = string.Empty; 
             public List<string> PlayerNicks { get; set; } = new List<string>();
-            public bool IsLeadUnit { get; set; } 
+            public bool IsLeadUnit { get; set; }
+            public string CreatorNick { get; set; } = string.Empty; // Никнейм создателя
         }
 
         public class AddPlayerToUnitDto
@@ -61,30 +63,105 @@ namespace SaMapViewer.Controllers
             public string? UnitId { get; set; }
             public string LastUpdate { get; set; } = string.Empty;
         }
+
+        public class UnitWithCoordsDto
+        {
+            public Guid Id { get; set; }
+            public string Marking { get; set; } = string.Empty;
+            public List<string> PlayerNicks { get; set; } = new List<string>();
+            public int PlayerCount { get; set; }
+            public string Status { get; set; } = string.Empty;
+            public Guid? SituationId { get; set; }
+            public bool IsLeadUnit { get; set; }
+            public Guid? TacticalChannelId { get; set; }
+            public DateTime CreatedAt { get; set; }
+            public float? X { get; set; }
+            public float? Y { get; set; }
+        }
         
         public class UpdateUnitDto 
         { 
             public string? Marking { get; set; } 
         }
         
-        public class StatusDto { public string Status { get; set; } = string.Empty; }
+        public class StatusDto 
+        { 
+            public string Status { get; set; } = string.Empty;
+            public string Nick { get; set; } = string.Empty; // Никнейм того, кто меняет статус
+        }
         public class AttachSituationDto { public Guid? SituationId { get; set; } }
-        public class LeadUnitDto { public bool IsLeadUnit { get; set; } }
+        public class LeadUnitDto 
+        { 
+            public bool IsLeadUnit { get; set; }
+            public string Nick { get; set; } = string.Empty; // Никнейм того, кто меняет лидер
+        }
         public class ChannelDto { public Guid? ChannelId { get; set; } }
 
-        [HttpPost]
-        public ActionResult<Unit> CreateUnit([FromBody] CreateUnitDto dto)
+        private void EnsureSqliteColumn(string tableName, string columnName, string columnDefinition)
         {
-            if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
-            
+            var connection = _db.Database.GetDbConnection();
+            if (connection.State != System.Data.ConnectionState.Open)
+            {
+                connection.Open();
+            }
+
+            using var checkCmd = connection.CreateCommand();
+            checkCmd.CommandText = $"PRAGMA table_info(\"{tableName}\");";
+
+            var exists = false;
+            using (var reader = checkCmd.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    var name = reader["name"]?.ToString();
+                    if (string.Equals(name, columnName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        exists = true;
+                        break;
+                    }
+                }
+            }
+
+            if (exists)
+                return;
+
+            using var alterCmd = connection.CreateCommand();
+            alterCmd.CommandText = $"ALTER TABLE \"{tableName}\" ADD COLUMN \"{columnName}\" {columnDefinition};";
+            alterCmd.ExecuteNonQuery();
+        }
+
+        private void EnsureUnitsSqliteCompatibility()
+        {
+            if (!_db.Database.IsSqlite())
+                return;
+
+            EnsureSqliteColumn("Units", "CreatorNick", "TEXT NOT NULL DEFAULT ''");
+        }
+
+        [HttpPost]
+        public async Task<ActionResult<Unit>> CreateUnit([FromBody] CreateUnitDto dto)
+        {
             if (dto.PlayerNicks == null || dto.PlayerNicks.Count == 0)
                 return BadRequest("PlayerNicks is required and must contain at least one player");
 
+            var creatorNick = string.IsNullOrWhiteSpace(dto.CreatorNick)
+                ? dto.PlayerNicks.FirstOrDefault() ?? string.Empty
+                : dto.CreatorNick;
+
             try
             {
-                var unit = _units.CreateUnit(dto.Marking, dto.PlayerNicks, dto.IsLeadUnit);
-                _hub.Clients.All.SendAsync("UnitCreated", unit);
-                _ = _history.AppendAsync(new { type = "unit_create", id = unit.Id, unit.Marking, playerNicks = unit.PlayerNicks, unit.IsLeadUnit });
+                var unit = await _units.CreateUnit(dto.Marking, dto.PlayerNicks, dto.IsLeadUnit, creatorNick);
+                await _hub.Clients.All.SendAsync("UnitCreated", unit);
+                _ = _history.AppendAsync(new { type = "unit_create", id = unit.Id, unit.Marking, playerNicks = unit.PlayerNicks, unit.IsLeadUnit, creatorNick });
+                return unit;
+            }
+            catch (SqliteException ex) when (ex.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase)
+                                             && ex.Message.Contains("CreatorNick", StringComparison.OrdinalIgnoreCase))
+            {
+                EnsureUnitsSqliteCompatibility();
+                var unit = await _units.CreateUnit(dto.Marking, dto.PlayerNicks, dto.IsLeadUnit, creatorNick);
+                await _hub.Clients.All.SendAsync("UnitCreated", unit);
+                _ = _history.AppendAsync(new { type = "unit_create", id = unit.Id, unit.Marking, playerNicks = unit.PlayerNicks, unit.IsLeadUnit, creatorNick });
                 return unit;
             }
             catch (ArgumentException ex)
@@ -97,149 +174,194 @@ namespace SaMapViewer.Controllers
             }
         }
 
+        private async Task<UnitWithCoordsDto> ToUnitWithCoordsDto(Unit unit)
+        {
+            var pos = await _units.GetUnitPosition(unit.Id);
+            return new UnitWithCoordsDto
+            {
+                Id = unit.Id,
+                Marking = unit.Marking,
+                PlayerNicks = unit.PlayerNicks.ToList(),
+                PlayerCount = unit.PlayerCount,
+                Status = unit.Status,
+                SituationId = unit.SituationId,
+                IsLeadUnit = unit.IsLeadUnit,
+                TacticalChannelId = unit.TacticalChannelId,
+                CreatedAt = unit.CreatedAt,
+                X = pos?.x,
+                Y = pos?.y
+            };
+        }
+
         [HttpGet]
-        public ActionResult<List<Unit>> GetAllUnits() => _units.GetAll();
+        public async Task<ActionResult<List<UnitWithCoordsDto>>> GetAllUnits()
+        {
+            try
+            {
+                var units = await _units.GetAll();
+                var result = await Task.WhenAll(units.Select(ToUnitWithCoordsDto));
+                return Ok(result.ToList());
+            }
+            catch (SqliteException ex) when (ex.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase)
+                                             && ex.Message.Contains("CreatorNick", StringComparison.OrdinalIgnoreCase))
+            {
+                EnsureUnitsSqliteCompatibility();
+                var units = await _units.GetAll();
+                var result = await Task.WhenAll(units.Select(ToUnitWithCoordsDto));
+                return Ok(result.ToList());
+            }
+        }
 
         [HttpGet("{id}")]
-        public ActionResult<Unit> GetUnit(Guid id)
+        public async Task<ActionResult<UnitWithCoordsDto>> GetUnit(Guid id)
         {
-            var unit = _units.GetUnit(id);
+            var unit = await _units.GetUnit(id);
             if (unit == null)
                 return NotFound($"Unit with ID {id} not found");
-            return unit;
+
+            return Ok(await ToUnitWithCoordsDto(unit));
         }
 
         [HttpDelete("{id}")]
-        public IActionResult DeleteUnit(Guid id)
+        public async Task<IActionResult> DeleteUnit(Guid id)
         {
-            if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
-            
-            var unit = _units.GetUnit(id);
+            var unit = await _units.GetUnit(id);
             if (unit == null)
                 return NotFound($"Unit with ID {id} not found");
 
-            _units.RemoveUnit(id);
-            _hub.Clients.All.SendAsync("UnitDeleted", new { id });
+            await _units.RemoveUnit(id);
+            await _hub.Clients.All.SendAsync("UnitDeleted", new { id });
             _ = _history.AppendAsync(new { type = "unit_delete", id, playerNicks = unit.PlayerNicks });
             return Ok();
         }
 
         [HttpPut("{id}")]
-        public IActionResult UpdateUnit(Guid id, [FromBody] UpdateUnitDto dto)
+        public async Task<IActionResult> UpdateUnit(Guid id, [FromBody] UpdateUnitDto dto)
         {
-            if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
-            
-            var unit = _units.GetUnit(id);
+            var unit = await _units.GetUnit(id);
             if (unit == null)
                 return NotFound($"Unit with ID {id} not found");
 
-            _units.UpdateUnit(id, dto.Marking);
-            var updatedUnit = _units.GetUnit(id);
+            await _units.UpdateUnit(id, dto.Marking);
+            var updatedUnit = await _units.GetUnit(id);
             if (updatedUnit != null)
             {
-                _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
+                await _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
                 _ = _history.AppendAsync(new { type = "unit_update", id = updatedUnit.Id, updatedUnit.Marking });
             }
             return Ok();
         }
 
         [HttpPut("{id}/status")]
-        public IActionResult SetStatus(Guid id, [FromBody] StatusDto dto)
+        public async Task<IActionResult> SetStatus(Guid id, [FromBody] StatusDto dto)
         {
-            if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
-            
-            var unit = _units.GetUnit(id);
+            var unit = await _units.GetUnit(id);
             if (unit == null)
                 return NotFound($"Unit with ID {id} not found");
 
-            _units.SetUnitStatus(id, dto.Status);
-            var updatedUnit = _units.GetUnit(id);
+            string actorNick = dto?.Nick ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(actorNick))
+            {
+                var (success, message) = await _units.SetUnitStatusWithValidation(id, dto!.Status, actorNick);
+                if (!success)
+                    return Forbid();
+            }
+            else
+            {
+                await _units.SetUnitStatus(id, dto?.Status ?? string.Empty);
+            }
+
+            var updatedUnit = await _units.GetUnit(id);
             if (updatedUnit != null)
             {
-                _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
-                _ = _history.AppendAsync(new { type = "unit_status", id = updatedUnit.Id, updatedUnit.Status });
+                await _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
+                _ = _history.AppendAsync(new { type = "unit_status", id = updatedUnit.Id, updatedUnit.Status, nick = actorNick });
             }
-            return Ok();
+            return Ok(new { message = "Status updated" });
         }
 
         [HttpPut("{id}/situation")]
-        public IActionResult AttachSituation(Guid id, [FromBody] AttachSituationDto dto)
+        public async Task<IActionResult> AttachSituation(Guid id, [FromBody] AttachSituationDto dto)
         {
-            if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
-            
-            var unit = _units.GetUnit(id);
+            var unit = await _units.GetUnit(id);
             if (unit == null)
                 return NotFound($"Unit with ID {id} not found");
 
-            _units.AttachToSituation(id, dto.SituationId);
-            var updatedUnit = _units.GetUnit(id);
+            await _units.AttachToSituation(id, dto.SituationId);
+            var updatedUnit = await _units.GetUnit(id);
             if (updatedUnit != null)
             {
-                _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
+                await _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
                 _ = _history.AppendAsync(new { type = "unit_attach_situation", id = updatedUnit.Id, updatedUnit.SituationId });
             }
             return Ok();
         }
 
         [HttpPut("{id}/lead")]
-        public IActionResult SetLeadUnit(Guid id, [FromBody] LeadUnitDto dto)
+        public async Task<IActionResult> SetLeadUnit(Guid id, [FromBody] LeadUnitDto dto)
         {
-            if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
-            
-            var unit = _units.GetUnit(id);
-            if (unit == null)
-                return NotFound($"Unit with ID {id} not found");
+            if (string.IsNullOrWhiteSpace(dto?.Nick))
+                return BadRequest("Nick is required");
 
-            _units.SetLeadUnit(id, dto.IsLeadUnit);
-            var updatedUnit = _units.GetUnit(id);
+            var (success, message) = await _units.SetLeadUnitWithValidation(id, dto.IsLeadUnit, dto.Nick);
+            if (!success)
+                return Forbid();
+
+            var updatedUnit = await _units.GetUnit(id);
             if (updatedUnit != null)
             {
-                _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
-                _ = _history.AppendAsync(new { type = "unit_set_lead", id = updatedUnit.Id, updatedUnit.IsLeadUnit });
+                await _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
+                _ = _history.AppendAsync(new { type = "unit_set_lead", id = updatedUnit.Id, updatedUnit.IsLeadUnit, nick = dto.Nick });
             }
-            return Ok();
+            return Ok(new { message });
         }
 
         [HttpPut("{id}/channel")]
-        public IActionResult AssignChannel(Guid id, [FromBody] ChannelDto dto)
+        public async Task<IActionResult> AssignChannel(Guid id, [FromBody] ChannelDto dto)
         {
-            if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
-            
-            var unit = _units.GetUnit(id);
+            var unit = await _units.GetUnit(id);
             if (unit == null)
                 return NotFound($"Unit with ID {id} not found");
 
-            _units.AssignTacticalChannel(id, dto.ChannelId);
-            var updatedUnit = _units.GetUnit(id);
+            await _units.AssignTacticalChannel(id, dto.ChannelId);
+            var updatedUnit = await _units.GetUnit(id);
             if (updatedUnit != null)
             {
-                _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
+                await _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
                 _ = _history.AppendAsync(new { type = "unit_assign_channel", id = updatedUnit.Id, updatedUnit.TacticalChannelId });
             }
             return Ok();
         }
 
         [HttpGet("available")]
-        public ActionResult<List<Unit>> GetAvailableUnits() => _units.GetAvailableUnits();
+        public async Task<ActionResult<List<UnitWithCoordsDto>>> GetAvailableUnits()
+        {
+            var units = await _units.GetAvailableUnits();
+            var result = await Task.WhenAll(units.Select(ToUnitWithCoordsDto));
+            return Ok(result.ToList());
+        }
 
         [HttpGet("by-situation/{situationId}")]
-        public ActionResult<List<Unit>> GetUnitsBySituation(Guid situationId) => _units.GetUnitsBySituation(situationId);
+        public async Task<ActionResult<List<UnitWithCoordsDto>>> GetUnitsBySituation(Guid situationId)
+        {
+            var units = await _units.GetUnitsBySituation(situationId);
+            var result = await Task.WhenAll(units.Select(ToUnitWithCoordsDto));
+            return Ok(result.ToList());
+        }
 
         [HttpPost("{id}/players/add")]
-        public IActionResult AddPlayerToUnit(Guid id, [FromBody] AddPlayerToUnitDto dto)
+        public async Task<IActionResult> AddPlayerToUnit(Guid id, [FromBody] AddPlayerToUnitDto dto)
         {
-            if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
-            
             if (string.IsNullOrWhiteSpace(dto.PlayerNick))
                 return BadRequest("PlayerNick is required");
 
             try
             {
-                _units.AddPlayerToUnit(id, dto.PlayerNick);
-                var updatedUnit = _units.GetUnit(id);
+                await _units.AddPlayerToUnit(id, dto.PlayerNick);
+                var updatedUnit = await _units.GetUnit(id);
                 if (updatedUnit != null)
                 {
-                    _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
+                    await _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
                     _ = _history.AppendAsync(new { type = "unit_add_player", unitId = id, playerNick = dto.PlayerNick });
                 }
                 return Ok();
@@ -255,32 +377,30 @@ namespace SaMapViewer.Controllers
         }
 
         [HttpPost("{id}/players/remove")]
-        public IActionResult RemovePlayerFromUnit(Guid id, [FromBody] RemovePlayerFromUnitDto dto)
+        public async Task<IActionResult> RemovePlayerFromUnit(Guid id, [FromBody] RemovePlayerFromUnitDto dto)
         {
-            if (!CheckApiKey(Request, _options.Value.ApiKey)) return Unauthorized();
-            
             if (string.IsNullOrWhiteSpace(dto.PlayerNick))
                 return BadRequest("PlayerNick is required");
 
-            _units.RemovePlayerFromUnit(id, dto.PlayerNick);
-            var updatedUnit = _units.GetUnit(id);
+            await _units.RemovePlayerFromUnit(id, dto.PlayerNick);
+            var updatedUnit = await _units.GetUnit(id);
             if (updatedUnit != null)
             {
-                _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
+                await _hub.Clients.All.SendAsync("UnitUpdated", updatedUnit);
             }
             else
             {
                 // Юнит был удален, так как остался без игроков
-                _hub.Clients.All.SendAsync("UnitDeleted", new { id });
+                await _hub.Clients.All.SendAsync("UnitDeleted", new { id });
             }
             _ = _history.AppendAsync(new { type = "unit_remove_player", unitId = id, playerNick = dto.PlayerNick });
             return Ok();
         }
 
         [HttpGet("{id}/players")]
-        public ActionResult<List<PlayerInUnitDto>> GetPlayersInUnit(Guid id)
+        public async Task<ActionResult<List<PlayerInUnitDto>>> GetPlayersInUnit(Guid id)
         {
-            var players = _units.GetPlayersInUnit(id);
+            var players = await _units.GetPlayersInUnit(id);
             var playerDtos = players.Select(p => new PlayerInUnitDto
             {
                 Nick = p.Nick,
@@ -297,20 +417,47 @@ namespace SaMapViewer.Controllers
         }
 
         [HttpGet("{id}/lead-player")]
-        public ActionResult<string> GetLeadPlayer(Guid id)
+        public async Task<ActionResult<string>> GetLeadPlayer(Guid id)
         {
-            var leadPlayer = _units.GetLeadPlayerNick(id);
+            var leadPlayer = await _units.GetLeadPlayerNick(id);
             if (leadPlayer == null)
                 return NotFound("No lead player found for this unit");
             
             return Ok(leadPlayer);
         }
 
-        static bool CheckApiKey(HttpRequest req, string key)
+        /// <summary>
+        /// Находит ближайшие юниты к указанным координатам
+        /// GET /api/units/nearest?x=1234.56&y=789.12&limit=5&onlyAvailable=false
+        /// </summary>
+        [HttpGet("nearest")]
+        public async Task<ActionResult<List<object>>> GetNearestUnits(
+            [FromQuery] float x, 
+            [FromQuery] float y, 
+            [FromQuery] int limit = 5,
+            [FromQuery] bool onlyAvailable = false)
         {
-            if (string.IsNullOrWhiteSpace(key)) return true;
-            if (!req.Headers.TryGetValue("X-API-Key", out var hdr)) return false;
-            return string.Join("", hdr.ToArray()) == key;
+            if (limit < 1 || limit > 50)
+                return BadRequest("Limit must be between 1 and 50");
+
+            var nearestUnits = await _units.GetNearestUnits(x, y, limit, onlyAvailable);
+
+            var response = nearestUnits.Select(u => new
+            {
+                id = u.Unit.Id,
+                marking = u.Unit.Marking,
+                playerNicks = u.Unit.PlayerNicks,
+                playerCount = u.Unit.PlayerCount,
+                status = u.Unit.Status,
+                situationId = u.Unit.SituationId,
+                isLeadUnit = u.Unit.IsLeadUnit,
+                tacticalChannelId = u.Unit.TacticalChannelId,
+                distance = Math.Round(u.Distance, 2), // Округляем до 2 знаков
+                x = u.X,
+                y = u.Y
+            }).ToList();
+
+            return Ok(response);
         }
     }
 }

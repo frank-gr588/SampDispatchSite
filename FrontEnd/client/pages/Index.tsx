@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
-import { apiGet, emitAppEvent, onAppEvent } from "@/lib/utils";
+import { apiGet, apiPost, apiPut, apiDelete, emitAppEvent, onAppEvent } from "@/lib/utils";
 import type { PlayerPointDto, UnitDto, SituationDto, TacticalChannelDto } from "@shared/api";
 import { useData } from "@/contexts/DataContext";
 import {
@@ -136,6 +136,7 @@ const adaptSituationForUI = (situation: SituationDto, index: number, units: Unit
 
   return {
     id: index + 1,
+    backendId: String(situation.id),
     code: (situation.type ?? "unknown").toUpperCase(),
     title,
     status: normalizedStatus,
@@ -271,16 +272,8 @@ export default function Index() {
       // If assigning to a situation, update backend status to Code 2
       if (situationId) {
         try {
-          await fetch(`/api/units/${unitId}/status`, {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/json",
-              "X-API-Key": "changeme-key"
-            },
-            body: JSON.stringify({ status: "Code 2" })
-          });
-          // Refresh units from backend to get updated state
-          await refreshUnits();
+          await apiPut(`/api/units/${unitId}/status`, { status: "Code 2" });
+          // Refresh will happen via event listeners
         } catch (e) {
           console.warn("Failed to update unit status on backend:", e);
         }
@@ -292,22 +285,12 @@ export default function Index() {
         // backend situation
         if (oldSitIndex >= 0 && oldSitIndex < backendSituations.length) {
           const oldSit = backendSituations[oldSitIndex];
-          await fetch(`/api/situations/${oldSit.id}/units/remove`, {
-            method: "POST",
-            headers: { 
-              "Content-Type": "application/json",
-              "X-API-Key": "changeme-key"
-            },
-            body: JSON.stringify({ unitId: unit.id })
-          });
-          // Refresh units from backend
-          await refreshUnits();
+          await apiPost(`/api/situations/${oldSit.id}/units/remove`, { unitId: unit.id });
         } else {
           // old assignment was a local/demo situation — clear local situations state
           const localIndex = oldSitIndex - backendSituations.length;
           if (localIndex >= 0 && localIndex < situations.length) {
             setSituations(current => current.map((s, i) => i === localIndex ? { ...s, unitsAssigned: Math.max(0, (s.unitsAssigned || 0) - 1) } : s));
-            await refreshUnits();
           }
         }
       }
@@ -320,39 +303,24 @@ export default function Index() {
         if (sitIndex >= 0 && sitIndex < backendSituations.length) {
           // backend situation
           const situation = backendSituations[sitIndex];
-          const response = await fetch(`/api/situations/${situation.id}/units/add`, {
-            method: "POST",
-            headers: { 
-              "Content-Type": "application/json",
-              "X-API-Key": "changeme-key"
-            },
-            body: JSON.stringify({ 
-              unitId: unit.id,
-              asLeadUnit: unit.isLeadUnit 
-            })
+          await apiPost(`/api/situations/${situation.id}/units/add`, { 
+            unitId: unit.id,
+            asLeadUnit: unit.isLeadUnit 
           });
-
-          if (!response.ok) {
-            throw new Error(`Failed to assign unit: ${response.status}`);
-          }
-          // Refresh data from backend
-          await refreshUnits();
-          await refreshSituations();
         } else {
           // local/demo situation
           const localIndex = sitIndex - backendSituations.length;
           if (localIndex >= 0 && localIndex < situations.length) {
             setSituations(current => current.map((s, i) => i === localIndex ? { ...s, unitsAssigned: (s.unitsAssigned || 0) + 1 } : s));
-            // Refresh data from backend
-            await refreshUnits();
           }
         }
       }
       
+      // Обновляем данные одним batch вызовом
+      await Promise.all([refreshUnits(), refreshSituations()]);
+      
       emitAppEvent('units:updated');
       emitAppEvent('situations:updated');
-      // Данные обновятся автоматически через useEffect
-      console.log("Assignment changed:", unitId, "->", situationId);
       
     } catch (error) {
       console.error("Error changing assignment:", error);
@@ -393,39 +361,17 @@ export default function Index() {
             : {};
           const metadata = { ...metadataSource } as Record<string, string>;
           metadata.status = nextStatus;
-          const metadataResponse = await fetch(`/api/situations/${backendSit.id}/metadata`, {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/json",
-              "X-API-Key": "changeme-key"
-            },
-            body: JSON.stringify({ metadata })
-          });
-          if (!metadataResponse.ok) {
-            throw new Error(`Metadata update failed: ${metadataResponse.status}`);
-          }
+          await apiPut(`/api/situations/${backendSit.id}/metadata`, { metadata });
         };
 
         if (status === "Monitoring") {
           if (backendSit.isActive) {
-            const closeResponse = await fetch(`/api/situations/${backendSit.id}/close`, {
-              method: "POST",
-              headers: { "X-API-Key": "changeme-key" }
-            });
-            if (!closeResponse.ok) {
-              throw new Error(`Close situation failed: ${closeResponse.status}`);
-            }
+            await apiPost(`/api/situations/${backendSit.id}/close`, {});
           }
           await updateMetadata("Monitoring");
         } else {
           if (!backendSit.isActive) {
-            const openResponse = await fetch(`/api/situations/${backendSit.id}/open`, {
-              method: "POST",
-              headers: { "X-API-Key": "changeme-key" }
-            });
-            if (!openResponse.ok) {
-              throw new Error(`Open situation failed: ${openResponse.status}`);
-            }
+            await apiPost(`/api/situations/${backendSit.id}/open`, {});
           }
           await updateMetadata(status);
         }
@@ -482,12 +428,7 @@ export default function Index() {
             X: updates.x ?? (metadata.x ? Number(metadata.x) : 0),
             Y: updates.y ?? (metadata.y ? Number(metadata.y) : 0),
           };
-          const locResp = await fetch(`/api/situations/${backendSit.id}/location`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json", "X-API-Key": "changeme-key" },
-            body: JSON.stringify(body),
-          });
-          if (!locResp.ok) throw new Error(`Failed to update location: ${locResp.status}`);
+          await apiPut(`/api/situations/${backendSit.id}/location`, body);
           // Make sure metadata we send afterwards contains the numeric coords (as strings)
           metadata.x = String(body.X);
           metadata.y = String(body.Y);
@@ -511,18 +452,7 @@ export default function Index() {
           if (next) metadata.title = next;
         }
         
-        const response = await fetch(`/api/situations/${backendSit.id}/metadata`, {
-          method: "PUT",
-          headers: { 
-            "Content-Type": "application/json",
-            "X-API-Key": "changeme-key"
-          },
-          body: JSON.stringify({ metadata })
-        });
-        
-        if (!response.ok) {
-          throw new Error(`Failed to update situation: ${response.status}`);
-        }
+        await apiPut(`/api/situations/${backendSit.id}/metadata`, { metadata });
         
         // Refresh situations from backend
         await refreshSituations();
@@ -557,34 +487,25 @@ export default function Index() {
       if (!confirm(`Удалить ситуацию "${backendSit.type}"?`)) return;
       
       try {
-        const response = await fetch(`/api/situations/${backendSit.id}`, {
-          method: "DELETE",
-          headers: { "X-API-Key": "changeme-key" }
-        });
-        
-        if (response.ok || response.status === 204) {
-          // Обновление произойдет автоматически через useEffect
-          console.log("Situation deleted:", backendSit.id);
-        } else {
-          alert(`Ошибка удаления ситуации: ${response.status}`);
-        }
+        await apiDelete(`/api/situations/${backendSit.id}`);
+        await refreshSituations();
+        console.log("Situation deleted:", backendSit.id);
       } catch (error) {
-        console.error("Error deleting situation:", error);
-        alert(`Ошибка удаления ситуации: ${error.message}`);
+        console.error('[Index] Failed to delete situation:', error);
       }
-    } else {
-      // Локальная демо-ситуация
-      setSituations((current) => current.filter((situation) => situation.id !== situationId));
-      setAssignments((current) => {
-        const next = { ...current };
-        Object.entries(next).forEach(([unitId, assigned]) => {
-          if (assigned === String(situationId)) {
-            next[unitId] = null;
-          }
-        });
-        return next;
-      });
     }
+    
+    // Локальная демо-ситуация
+    setSituations((current) => current.filter((situation) => situation.id !== situationId));
+    setAssignments((current) => {
+      const next = { ...current };
+      Object.entries(next).forEach(([unitId, assigned]) => {
+        if (assigned === String(situationId)) {
+          next[unitId] = null;
+        }
+      });
+      return next;
+    });
   };
 
   // Real-time clock update
@@ -611,11 +532,11 @@ export default function Index() {
   }, [refreshUnits, refreshPlayers]);
 
   // Sync player coordinates from backend in real-time
-  // DataContext уже загружает данные, здесь только периодическое обновление
+  // Обновление раз в секунду для координат
   useEffect(() => {
     const id = setInterval(() => {
       refreshPlayers();
-    }, 5000);
+    }, 1000); // 1 секунда
     return () => clearInterval(id);
   }, [refreshPlayers]);
 
@@ -640,19 +561,19 @@ export default function Index() {
     setAssignments(newAssignments);
   }, [units, backendSituations]);
 
-  // Периодическое обновление ситуаций (DataContext уже загружает при монтировании)
+  // Периодическое обновление ситуаций
   useEffect(() => {
     const interval = setInterval(() => {
       refreshSituations();
-    }, 5000);
+    }, 1000); // 1 секунда
     return () => clearInterval(interval);
   }, [refreshSituations]);
 
-  // Периодическое обновление каналов (DataContext уже загружает при монтировании)
+  // Периодическое обновление каналов
   useEffect(() => {
     const interval = setInterval(() => {
       refreshTacticalChannels();
-    }, 10000);
+    }, 2000); // 2 секунды
     
     // Слушаем события обновления каналов
     const handleChannelsUpdate = () => {

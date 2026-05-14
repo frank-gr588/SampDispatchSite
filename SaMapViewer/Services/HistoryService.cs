@@ -11,6 +11,7 @@ namespace SaMapViewer.Services
         public string ApiKey { get; set; } = string.Empty;
         public int PlayerTtlSeconds { get; set; } = 10;
         public string HistoryPath { get; set; } = "history.jsonl";
+        public string DatabasePath { get; set; } = "samap.db";
     }
 
     public class HistoryService

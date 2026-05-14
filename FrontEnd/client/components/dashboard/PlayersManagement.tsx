@@ -37,7 +37,7 @@ import {
   getPlayerRankText,
   getPlayerRankColor
 } from "@shared/api";
-import { emitAppEvent } from "@/lib/utils";
+import { emitAppEvent, apiPut, apiPost, apiDelete } from "@/lib/utils";
 import { useData } from "@/contexts/DataContext";
 
 interface PlayersManagementProps {
@@ -169,50 +169,10 @@ export function PlayersManagement({ className }: PlayersManagementProps) {
     if (!editingPlayer) return;
     
     try {
-      // Обновляем роль
-      const roleResponse = await fetch(`/api/players/${encodeURIComponent(editingPlayer.nick)}/role`, {
-        method: "PUT",
-        headers: { 
-          "Content-Type": "application/json",
-          "X-API-Key": "changeme-key"
-        },
-        body: JSON.stringify({ role: editingPlayer.role })
-      });
-
-      if (!roleResponse.ok) {
-        const errorText = await roleResponse.text();
-        throw new Error(`Failed to update role: ${roleResponse.status} - ${errorText}`);
-      }
-
-      // Обновляем звание
-      const rankResponse = await fetch(`/api/players/${encodeURIComponent(editingPlayer.nick)}/rank`, {
-        method: "PUT",
-        headers: { 
-          "Content-Type": "application/json",
-          "X-API-Key": "changeme-key"
-        },
-        body: JSON.stringify({ rank: editingPlayer.rank })
-      });
-
-      if (!rankResponse.ok) {
-        const errorText = await rankResponse.text();
-        throw new Error(`Failed to update rank: ${rankResponse.status} - ${errorText}`);
-      }
-
-      // Обновляем статус
-      const statusResponse = await fetch(`/api/players/${encodeURIComponent(editingPlayer.nick)}/status`, {
-        method: "PUT",
-        headers: { 
-          "Content-Type": "application/json",
-          "X-API-Key": "changeme-key"
-        },
-        body: JSON.stringify({ status: editingPlayer.status })
-      });
-
-      if (!statusResponse.ok) {
-        const errorText = await statusResponse.text();
-        throw new Error(`Failed to update status: ${statusResponse.status} - ${errorText}`);
-      }
+      // Обновляем роль, звание и статус
+      await apiPut(`/api/players/${encodeURIComponent(editingPlayer.nick)}/role`, { role: editingPlayer.role });
+      await apiPut(`/api/players/${encodeURIComponent(editingPlayer.nick)}/rank`, { rank: editingPlayer.rank });
+      await apiPut(`/api/players/${encodeURIComponent(editingPlayer.nick)}/status`, { status: editingPlayer.status });
 
       // Refresh players from Context
       await refreshPlayers();
@@ -264,17 +224,7 @@ export function PlayersManagement({ className }: PlayersManagementProps) {
       }
 
       // Now delete the player on the server
-      const response = await fetch(`/api/players/${encodeURIComponent(player.nick)}`, {
-        method: "DELETE",
-        headers: { 
-          "X-API-Key": "changeme-key"
-        }
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Failed to delete player: ${response.status} ${response.statusText} - ${errorText}`);
-      }
+      await apiDelete(`/api/players/${encodeURIComponent(player.nick)}`);
 
       console.log(`Player ${player.nick} deleted from server`);
 

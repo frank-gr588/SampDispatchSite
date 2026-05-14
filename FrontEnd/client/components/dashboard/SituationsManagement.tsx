@@ -36,7 +36,7 @@ import {
   UnitDto,
   CreateSituationRequest
 } from "@shared/api";
-import { emitAppEvent } from "@/lib/utils";
+import { emitAppEvent, apiGet, apiPost, apiPut, apiDelete } from "@/lib/utils";
 import type { SituationRecord } from "./SituationsPanel";
 
 interface SituationsManagementProps {
@@ -153,14 +153,8 @@ export function SituationsManagement({ className }: SituationsManagementProps) {
   
   const fetchSituationUnits = async (situationId: string) => {
     try {
-      const response = await fetch(`/api/units/by-situation/${situationId}`);
-      if (response.ok) {
-        const data = await response.json();
-        setSituationUnits(Array.isArray(data) ? data : []);
-      } else {
-        console.warn("Failed to fetch situation units", response.status, response.statusText);
-        setSituationUnits([]);
-      }
+      const data = await apiGet<UnitDto[]>(`/api/units/by-situation/${situationId}`);
+      setSituationUnits(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error("Error fetching situation units:", error);
       setSituationUnits([]);

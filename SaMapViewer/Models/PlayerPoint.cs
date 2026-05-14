@@ -43,6 +43,7 @@ namespace SaMapViewer.Models
         public DateTime LastUpdate { get; set; }
         public DateTime LastActivityTime { get; set; }  // Последняя активность (движение)
         public bool IsAFK { get; set; }  // Статус AFK
+        public bool IsSuspect { get; set; } // Подозреваемый (создаётся через /prst)
 
         // Parameterless ctor for deserialization
         public PlayerPoint() {
@@ -56,6 +57,7 @@ namespace SaMapViewer.Models
             LastUpdate = DateTime.UtcNow;
             LastActivityTime = DateTime.UtcNow;
             IsAFK = false;
+            IsSuspect = false;
         }
 
         public PlayerPoint(string nick, float x, float y)

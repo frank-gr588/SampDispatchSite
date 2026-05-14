@@ -61,8 +61,11 @@ export interface SituationDto {
   units: string[];
   greenUnitId?: string | null;  // Green Unit (Инициатор)
   redUnitId?: string | null;    // Red Unit (Командир)
+  locationName?: string | null;
   createdAt: string;
   isActive: boolean;
+  x?: number | null;
+  y?: number | null;
 }
 
 export interface UnitDto {
@@ -75,6 +78,8 @@ export interface UnitDto {
   isLeadUnit: boolean;
   tacticalChannelId?: string | null;
   createdAt: string;
+  x?: number | null;
+  y?: number | null;
 }
 
 export interface TacticalChannelDto {

@@ -49,7 +49,7 @@ const UNIT_TYPES = [
 ];
 
 const SHIFTS = [
-  { value: "", label: "Без смены (спецподразделения)" },
+  { value: "None", label: "Без смены (спецподразделения)" },
   { value: "A", label: "A - Дневная смена" },
   { value: "B", label: "B - Смешанная смена" },
   { value: "C", label: "C - Вечерняя смена" },
@@ -75,7 +75,7 @@ export function MarkingSelector({ value, onChange, playerRank, existingMarkings 
   const [station, setStation] = useState("A");
   const [unitType, setUnitType] = useState("paired");
   const [unitNumber, setUnitNumber] = useState("10");
-  const [shift, setShift] = useState("A");
+  const [shift, setShift] = useState("None");
   const [manualValue, setManualValue] = useState(value);
   const [warnings, setWarnings] = useState<string[]>([]);
 
@@ -214,9 +214,9 @@ export function MarkingSelector({ value, onChange, playerRank, existingMarkings 
           {/* Визард выбора */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>Бюро</Label>
+              <Label htmlFor="bureau">Бюро</Label>
               <Select value={bureau} onValueChange={setBureau}>
-                <SelectTrigger>
+                <SelectTrigger id="bureau">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -228,9 +228,9 @@ export function MarkingSelector({ value, onChange, playerRank, existingMarkings 
             </div>
 
             <div>
-              <Label>Станция</Label>
+              <Label htmlFor="station">Станция</Label>
               <Select value={station} onValueChange={setStation}>
-                <SelectTrigger>
+                <SelectTrigger id="station">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -242,13 +242,13 @@ export function MarkingSelector({ value, onChange, playerRank, existingMarkings 
             </div>
 
             <div className="col-span-2">
-              <Label>Тип экипажа</Label>
+              <Label htmlFor="unit-type">Тип экипажа</Label>
               <Select value={unitType} onValueChange={(v) => {
                 setUnitType(v);
                 const type = UNIT_TYPES.find(t => t.value === v);
                 if (type) setUnitNumber(type.range[0].toString());
               }}>
-                <SelectTrigger>
+                <SelectTrigger id="unit-type">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -260,8 +260,9 @@ export function MarkingSelector({ value, onChange, playerRank, existingMarkings 
             </div>
 
             <div>
-              <Label>Номер</Label>
+              <Label htmlFor="unit-number">Номер</Label>
               <Input
+                id="unit-number"
                 type="number"
                 value={unitNumber}
                 onChange={(e) => setUnitNumber(e.target.value)}
@@ -275,9 +276,9 @@ export function MarkingSelector({ value, onChange, playerRank, existingMarkings 
             </div>
 
             <div>
-              <Label>Смена</Label>
+              <Label htmlFor="shift">Смена</Label>
               <Select value={shift} onValueChange={setShift}>
-                <SelectTrigger>
+                <SelectTrigger id="shift">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -299,8 +300,9 @@ export function MarkingSelector({ value, onChange, playerRank, existingMarkings 
         <>
           {/* Ручной ввод */}
           <div>
-            <Label>Маркировка (макс. 8 символов)</Label>
+            <Label htmlFor="manual-marking">Маркировка (макс. 8 символов)</Label>
             <Input
+              id="manual-marking"
               value={manualValue}
               onChange={(e) => handleManualChange(e.target.value)}
               placeholder="Например: 3B 101A"
